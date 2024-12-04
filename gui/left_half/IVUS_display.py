@@ -67,7 +67,11 @@ class IVUSDisplay(QGraphicsView):
         self.full_contours = [
             (
                 Spline(
-                    [lumen[0][frame], lumen[1][frame]], self.n_points_contour, self.contour_thickness, self.color_contour, self.alpha_contour
+                    [lumen[0][frame], lumen[1][frame]],
+                    self.n_points_contour,
+                    self.contour_thickness,
+                    self.color_contour,
+                    self.alpha_contour,
                 ).get_unscaled_contour(
                     scaling_factor=1
                 )  # data is not yet scaled at read, hence scaling_factor=1
@@ -219,7 +223,13 @@ class IVUSDisplay(QGraphicsView):
         if lumen[0][self.frame]:
             lumen_x = [point * self.scaling_factor for point in lumen[0][self.frame]]
             lumen_y = [point * self.scaling_factor for point in lumen[1][self.frame]]
-            self.current_contour = Spline([lumen_x, lumen_y], self.n_points_contour, self.contour_thickness, self.color_contour, self.alpha_contour)
+            self.current_contour = Spline(
+                [lumen_x, lumen_y],
+                self.n_points_contour,
+                self.contour_thickness,
+                self.color_contour,
+                self.alpha_contour,
+            )
             if self.current_contour.full_contour[0] is not None:
                 self.contour_points = [
                     Point(
@@ -414,7 +424,13 @@ class IVUSDisplay(QGraphicsView):
                 elif spline:  # clicked on contour
                     path_index = self.current_contour.on_path(pos)
                     self.main_window.setCursor(Qt.BlankCursor)
-                    self.active_point = Point((pos.x(), pos.y()), self.point_thickness, self.point_radius, self.color_contour, self.alpha_contour)
+                    self.active_point = Point(
+                        (pos.x(), pos.y()),
+                        self.point_thickness,
+                        self.point_radius,
+                        self.color_contour,
+                        self.alpha_contour,
+                    )
                     self.graphics_scene.addItem(self.active_point)
                     self.active_point.update_color()
                     self.active_point_index = self.current_contour.update(pos, self.active_point_index, path_index)
