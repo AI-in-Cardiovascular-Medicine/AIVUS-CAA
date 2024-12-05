@@ -12,7 +12,7 @@ from PyQt5.QtCore import Qt, QUrl
 from gui.popup_windows.frame_range_dialog import FrameRangeDialog
 from gui.popup_windows.message_boxes import ErrorMessage, SuccessMessage
 from gui.popup_windows.video_player import VideoPlayer
-from gui.utils.contours_gui import new_contour, new_measure
+from gui.utils.contours_gui import new_contour, new_measure, new_eem
 from input_output.metadata import MetadataWindow
 from input_output.read_image import read_image
 from input_output.contours_io import write_contours, save_gated_images
@@ -65,8 +65,10 @@ def init_menu(main_window):
     exit_action.setShortcut('Ctrl+Q')
 
     edit_menu = main_window.menu_bar.addMenu('Edit')
-    manual_contour = edit_menu.addAction('Manual Contour', partial(new_contour, main_window))
-    manual_contour.setShortcut('E')
+    manual_contour_lumen = edit_menu.addAction('Manual Contour Lumen', partial(new_contour, main_window))
+    manual_contour_lumen.setShortcut('E')
+    manual_contour_eem = edit_menu.addAction('Manual Contour EEM', partial(new_eem, main_window))
+    manual_contour_eem.setShortcut('Q')
     edit_menu.addAction('Remove Contours', partial(remove_contours, main_window))
     edit_menu.addSeparator()
     edit_menu.addAction('Reset Phases', partial(reset_phases, main_window))
@@ -128,12 +130,14 @@ def is_gating_display_active(main_window):
 def remove_contours(main_window):
     if main_window.image_displayed:
         dialog = FrameRangeDialog(main_window)
-        if dialog.exec_():
+        if (dialog.exec_()):
             main_window.status_bar.showMessage('Removing contours...')
             lower_limit, upper_limit = dialog.getInputs()
             for frame in range(lower_limit, upper_limit):
                 main_window.data['lumen'][0][frame] = []
                 main_window.data['lumen'][1][frame] = []
+                main_window.data['eem'][0][frame] = []
+                main_window.data['eem'][1][frame] = []
             main_window.longitudinal_view.remove_contours(lower_limit, upper_limit)
             main_window.display.update_display()
             main_window.status_bar.showMessage(main_window.waiting_status)
@@ -142,7 +146,7 @@ def remove_contours(main_window):
 def reset_phases(main_window):
     if main_window.image_displayed:
         dialog = FrameRangeDialog(main_window)
-        if dialog.exec_():
+        if (dialog.exec_()):
             main_window.status_bar.showMessage('Resetting phases...')
             lower_limit, upper_limit = dialog.getInputs()
             for frame in range(lower_limit, upper_limit):
@@ -178,7 +182,7 @@ def switch_phases(main_window):
 
     if main_window.image_displayed:
         dialog = FrameRangeDialog(main_window)
-        if dialog.exec_():
+        if (dialog.exec_()):
             main_window.status_bar.showMessage('Switching phases...')
             lower_limit, upper_limit = dialog.getInputs()
             for frame in range(lower_limit, upper_limit):
@@ -279,8 +283,12 @@ def delete_contour(main_window):
     if main_window.image_displayed:
         main_window.tmp_lumen_x = main_window.data['lumen'][0][main_window.display.frame]  # for Ctrl+Z
         main_window.tmp_lumen_y = main_window.data['lumen'][1][main_window.display.frame]
+        main_window.tmp_eem_x = main_window.data['eem'][0][main_window.display.frame]
+        main_window.tmp_eem_y = main_window.data['eem'][1][main_window.display.frame]
         main_window.data['lumen'][0][main_window.display.frame] = []
         main_window.data['lumen'][1][main_window.display.frame] = []
+        main_window.data['eem'][0][main_window.display.frame] = []
+        main_window.data['eem'][1][main_window.display.frame] = []
         main_window.display.display_image(update_contours=True)
 
 
@@ -288,8 +296,12 @@ def undo_delete(main_window):
     if main_window.image_displayed and main_window.tmp_lumen_x:
         main_window.data['lumen'][0][main_window.display.frame] = main_window.tmp_lumen_x
         main_window.data['lumen'][1][main_window.display.frame] = main_window.tmp_lumen_y
+        main_window.data['eem'][0][main_window.display.frame] = main_window.tmp_eem_x
+        main_window.data['eem'][1][main_window.display.frame] = main_window.tmp_eem_y
         main_window.tmp_lumen_x = []
         main_window.tmp_lumen_y = []
+        main_window.tmp_eem_x = []
+        main_window.tmp_eem_y = []
     main_window.display.stop_contour()
 
 

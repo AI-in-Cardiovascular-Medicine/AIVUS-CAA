@@ -18,8 +18,10 @@ display:
   contour_thickness: 3
   point_thickness: 1
   point_radius: 10
-  color_contour: 'white' # 20 predefined colors in PyQt5 (https://doc.qt.io/qt-6/qcolor.html)
-  alpha_contour: 50 # 0-255
+  color_contour: 'green' # 20 predefined colors in PyQt5 (https://doc.qt.io/qt-6/qcolor.html)
+  alpha_contour: 128 # 0-255
+  color_eem: 'red'
+  alpha_eem: 128
 
 gating:
   normalize_step: 100

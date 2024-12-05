@@ -32,13 +32,18 @@ class IVUSDisplay(QGraphicsView):
         self.point_radius = config.display.point_radius
         self.color_contour = config.display.color_contour
         self.alpha_contour = config.display.alpha_contour
+        self.color_eem = config.display.color_eem
+        self.alpha_eem = config.display.alpha_eem
         self.graphics_scene = QGraphicsScene(self)
         self.points_to_draw = []
         self.contour_points = []
+        self.eem_points = []
+        self.eem_points_to_draw = []
         self.frame = 0
         self.contour_mode = False
         self.contour_drawn = False
         self.current_contour = None  # entire contour (not only knotpoints), needed for elliptic ratio
+        self.current_eem = None
         self.new_spline = None
         self.active_point = None
         self.active_point_index = None
@@ -82,6 +87,31 @@ class IVUSDisplay(QGraphicsView):
         ]
         self.images = images
         self.main_window.longitudinal_view.set_data(self.images, self.full_contours)
+        self.display_image(update_image=True, update_contours=True, update_phase=True)
+
+    def set_data_eem(self, eem, images):
+        num_frames = images.shape[0]
+        self.image_width = images.shape[1]
+        self.scaling_factor = self.image_size / images.shape[1]
+        self.main_window.data['eem'] = eem
+        self.full_eem = [
+            (
+                Spline(
+                    [eem[0][frame], eem[1][frame]],
+                    self.n_points_contour,
+                    self.contour_thickness,
+                    self.color_eem,
+                    self.alpha_eem,
+                ).get_unscaled_contour(
+                    scaling_factor=1
+                )  # data is not yet scaled at read, hence scaling_factor=1
+                if eem[0][frame]
+                else None
+            )
+            for frame in range(num_frames)
+        ]
+        self.images = images
+        self.current_eem = None
         self.display_image(update_image=True, update_contours=True, update_phase=True)
 
     def display_image(self, update_image=False, update_contours=False, update_phase=False):
@@ -178,18 +208,28 @@ class IVUSDisplay(QGraphicsView):
                             QPen(Qt.yellow, self.point_thickness * 2),
                         )
 
+                    self.draw_eem(self.main_window.data['eem'])
+                    eem_area, eem_circumf = 0, 0
+                    if self.main_window.data['eem'][0][self.frame] and self.current_eem.full_contour[0] is not None:
+                        eem_x, eem_y = self.current_eem.get_unscaled_contour(self.scaling_factor)
+                        eem_polygon = Polygon([(x, y) for x, y in zip(eem_x, eem_y)])
+                        eem_area, eem_circumf, _, _ = compute_polygon_metrics(self.main_window, eem_polygon, self.frame)
+
                     elliptic_ratio = (longest_distance / shortest_distance) if shortest_distance != 0 else 0
                     frame_metrics_text = QGraphicsTextItem(
                         f'Lumen area:\t\t{round(lumen_area, 2)} (mm\N{SUPERSCRIPT TWO})\n'
                         f'Lumen circ:\t\t{round(lumen_circumf, 2)} (mm)\n'
                         f'Elliptic ratio:\t\t{round(elliptic_ratio, 2)}\n'
                         f'Longest distance:\t{round(longest_distance, 2)} (mm)\n'
-                        f'Shortest distance:\t{round(shortest_distance, 2)} (mm)'
+                        f'Shortest distance:\t{round(shortest_distance, 2)} (mm)\n'
+                        f'EEM area:\t\t{round(eem_area, 2)} (mm\N{SUPERSCRIPT TWO})\n'
+                        f'Plaque + Media:\t\t{round(eem_area - lumen_area, 2)} (mm\N{SUPERSCRIPT TWO})'
                     )
                     frame_metrics_text.setFont(QFont('Helvetica', int(self.image_size / 50)))
                     self.graphics_scene.addItem(frame_metrics_text)
                     if not update_phase:
                         self.graphics_scene.addItem(self.phase_text)
+
             else:  # re-draw old elements to put them in foreground
                 [self.graphics_scene.addItem(item) for item in old_contours]
 
@@ -247,6 +287,42 @@ class IVUSDisplay(QGraphicsView):
             else:
                 logger.warning(f'Spline for frame {self.frame + 1} could not be interpolated')
 
+    def draw_eem(self, eem):
+        """Adds eem contours to scene"""
+        # initialize in main_window.data if not done
+        if self.main_window.data['eem'][0][self.frame] is None:
+            self.main_window.data['eem'] = [
+                [None] * self.main_window.metadata['num_frames'],
+                [None] * self.main_window.metadata['num_frames'],
+            ]
+
+        if eem[0][self.frame]:
+            eem_x = [point * self.scaling_factor for point in eem[0][self.frame]]
+            eem_y = [point * self.scaling_factor for point in eem[1][self.frame]]
+            self.current_eem = Spline(
+                [eem_x, eem_y],
+                self.n_points_contour,
+                self.contour_thickness,
+                self.color_eem,
+                self.alpha_eem,
+            )
+            if self.current_eem.full_contour[0] is not None:
+                self.eem_points = [
+                    Point(
+                        (self.current_eem.knot_points[0][i], self.current_eem.knot_points[1][i]),
+                        self.point_thickness,
+                        self.point_radius,
+                        self.color_eem,
+                        self.alpha_eem,
+                    )
+                    for i in range(len(self.current_eem.knot_points[0]) - 1)
+                ]
+                [self.graphics_scene.addItem(point) for point in self.eem_points]
+                self.graphics_scene.addItem(self.current_eem)
+                self.full_eem[self.frame] = self.current_eem.get_unscaled_contour(self.scaling_factor)
+            else:
+                logger.warning(f'Spline for frame {self.frame + 1} could not be interpolated')
+
     def add_contour(self, point):
         """Creates an interactive contour manually point by point"""
 
@@ -300,13 +376,74 @@ class IVUSDisplay(QGraphicsView):
             self.points_to_draw.append(Point((point.x(), point.y()), self.point_thickness, self.point_radius))
             self.graphics_scene.addItem(self.points_to_draw[-1])
 
-    def start_contour(self):
+    def add_eem(self, point):
+        """Creates an interactive contour manually point by point"""
+
+        if self.eem_points_to_draw:
+            start_point = self.eem_points_to_draw[0].get_coords()
+        else:
+            self.contour_drawn = False
+            start_point = (point.x(), point.y())
+
+        if start_point[0] is None:  # occurs when Point has been deleted during draw (e.g. by RMB click)
+            self.eem_points_to_draw = []
+            self.contour_mode = False
+            self.main_window.setCursor(Qt.ArrowCursor)
+            self.display_image(update_contours=True)
+        else:
+            if len(self.eem_points_to_draw) > 3:  # start drawing spline after 3 points
+                if not self.contour_drawn:
+                    self.new_spline_eem = Spline(
+                        [
+                            [point.get_coords()[0] for point in self.eem_points_to_draw],
+                            [point.get_coords()[1] for point in self.eem_points_to_draw],
+                        ],
+                        self.n_points_contour,
+                        self.contour_thickness,
+                    )
+                    self.graphics_scene.addItem(self.new_spline_eem)
+                    self.contour_drawn = True
+                else:
+                    self.new_spline_eem.update(point, len(self.eem_points_to_draw))
+
+            if len(self.eem_points_to_draw) > 1:  # check distance to start point, if close enough, close contour
+                dist = math.sqrt((point.x() - start_point[0]) ** 2 + (point.y() - start_point[1]) ** 2)
+
+                if dist < 20:
+                    self.eem_points_to_draw = []
+                    if self.new_spline_eem is not None:
+                        downsampled = downsample(
+                            (
+                                [self.new_spline_eem.full_contour[0].tolist()],
+                                [self.new_spline_eem.full_contour[1].tolist()],
+                            ),
+                            self.n_interactive_points,
+                        )
+                        self.main_window.data['eem'][0][self.frame] = [
+                            point / self.scaling_factor for point in downsampled[0]
+                        ]
+                        self.main_window.data['eem'][1][self.frame] = [
+                            point / self.scaling_factor for point in downsampled[1]
+                        ]
+
+                    self.stop_contour()
+                    return
+
+            self.eem_points_to_draw.append(Point((point.x(), point.y()), self.point_thickness, self.point_radius))
+            self.graphics_scene.addItem(self.eem_points_to_draw[-1])
+
+    def start_contour(self, lumen=True):
         self.measure_index = None
         self.main_window.setCursor(Qt.CrossCursor)
         self.contour_mode = True
         self.points_to_draw = []
-        self.main_window.data['lumen'][0][self.frame] = []
-        self.main_window.data['lumen'][1][self.frame] = []
+        self.eem_points_to_draw = []
+        if lumen:
+            self.main_window.data['lumen'][0][self.frame] = []
+            self.main_window.data['lumen'][1][self.frame] = []
+        else:
+            self.main_window.data['eem'][0][self.frame] = []
+            self.main_window.data['eem'][1][self.frame] = []
         self.display_image(update_contours=True)  # clear previous contour
 
     def stop_contour(self):
@@ -401,7 +538,10 @@ class IVUSDisplay(QGraphicsView):
         if event.buttons() == Qt.MouseButton.LeftButton:
             pos = self.mapToScene(event.pos())
             if self.contour_mode:
-                self.add_contour(pos)
+                if self.main_window.data['lumen'][0][self.frame] == []:
+                    self.add_contour(pos)
+                else:
+                    self.add_eem(pos)
             elif self.measure_index is not None:  # drawing measure
                 self.add_measure(pos)
             elif self.reference_mode:
@@ -416,12 +556,15 @@ class IVUSDisplay(QGraphicsView):
                 spline = [item for item in items if isinstance(item, Spline)]
                 if point and point[0] in self.contour_points:
                     self.main_window.setCursor(Qt.BlankCursor)  # remove cursor for precise contour changes
-                    # Convert mouse position to item position
-                    # https://stackoverflow.com/questions/53627056/how-to-get-cursor-click-position-in-qgraphicsitem-coordinate-system
                     self.active_point_index = self.contour_points.index(point[0])
                     point[0].update_color()
                     self.active_point = point[0]
-                elif spline:  # clicked on contour
+                elif point and point[0] in self.eem_points:
+                    self.main_window.setCursor(Qt.BlankCursor)  # remove cursor for precise contour changes
+                    self.active_point_index = self.eem_points.index(point[0])
+                    point[0].update_color()
+                    self.active_point = point[0]
+                elif spline and spline[0] == self.current_contour:  # clicked on lumen contour
                     path_index = self.current_contour.on_path(pos)
                     self.main_window.setCursor(Qt.BlankCursor)
                     self.active_point = Point(
@@ -434,6 +577,20 @@ class IVUSDisplay(QGraphicsView):
                     self.graphics_scene.addItem(self.active_point)
                     self.active_point.update_color()
                     self.active_point_index = self.current_contour.update(pos, self.active_point_index, path_index)
+                elif spline and spline[0] == self.current_eem:  # clicked on eem contour
+                    path_index = self.current_eem.on_path(pos)
+                    self.main_window.setCursor(Qt.BlankCursor)
+                    self.active_point = Point(
+                        (pos.x(), pos.y()),
+                        self.point_thickness,
+                        self.point_radius,
+                        self.color_eem,
+                        self.alpha_eem,
+                    )
+                    self.graphics_scene.addItem(self.active_point)
+                    self.active_point.update_color()
+                    self.active_point_index = 0  # Initialize active_point_index to 0
+                    self.active_point_index = self.current_eem.update(pos, self.active_point_index, path_index)
 
         elif event.buttons() == Qt.MouseButton.RightButton:
             self.mouse_x = event.x()
@@ -445,7 +602,10 @@ class IVUSDisplay(QGraphicsView):
                 item = self.active_point
                 mouse_position = item.mapFromScene(self.mapToScene(event.pos()))
                 new_point = item.update_pos(mouse_position)
-                self.current_contour.update(new_point, self.active_point_index)
+                if self.active_point in self.contour_points:
+                    self.current_contour.update(new_point, self.active_point_index)
+                elif self.active_point in self.eem_points:
+                    self.current_eem.update(new_point, self.active_point_index)
 
         elif event.buttons() == Qt.MouseButton.RightButton:
             self.setMouseTracking(True)
@@ -462,12 +622,24 @@ class IVUSDisplay(QGraphicsView):
                 item = self.active_point
                 item.reset_color()
 
-                self.main_window.data['lumen'][0][self.frame] = [
-                    point / self.scaling_factor for point in self.current_contour.knot_points[0]
-                ]
-                self.main_window.data['lumen'][1][self.frame] = [
-                    point / self.scaling_factor for point in self.current_contour.knot_points[1]
-                ]
+                # Update lumen or EEM contour data based on the active point
+                if self.active_point in self.contour_points:
+                    self.main_window.data['lumen'][0][self.frame] = [
+                        point / self.scaling_factor for point in self.current_contour.knot_points[0]
+                    ]
+                    self.main_window.data['lumen'][1][self.frame] = [
+                        point / self.scaling_factor for point in self.current_contour.knot_points[1]
+                    ]
+                elif self.active_point in self.eem_points:
+                    self.main_window.data['eem'][0][self.frame] = [
+                        point / self.scaling_factor for point in self.current_eem.knot_points[0]
+                    ]
+                    self.main_window.data['eem'][1][self.frame] = [
+                        point / self.scaling_factor for point in self.current_eem.knot_points[1]
+                    ]
+                    self.full_eem[self.frame] = self.current_eem.get_unscaled_contour(self.scaling_factor)
+
+                # Refresh the display
                 self.display_image(update_contours=True)
                 self.main_window.longitudinal_view.lview_contour(
                     self.frame, self.full_contours[self.frame], update=True

@@ -34,10 +34,15 @@ class Master(QMainWindow):
         self.filter = None
         self.tmp_lumen_x = []  # for Ctrl+Z
         self.tmp_lumen_y = []
+        self.tmp_eem_x = []
+        self.tmp_eem_y = []
         self.gated_frames = []
         self.gated_frames_dia = []
         self.gated_frames_sys = []
-        self.data = {}  # container to be saved in JSON file later, includes contours, etc.
+        self.data = {
+            'lumen': [[], []],
+            'eem': [[], []],  # Initialize 'eem' key
+        }
         self.metadata = {}  # metadata used outside of read_image (not saved to JSON file)
         self.images = None
         self.diastole_color = (39, 69, 219)

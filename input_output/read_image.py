@@ -48,6 +48,9 @@ def read_image(main_window):
         main_window.file_name = os.path.splitext(file_name)[0]  # remove file extension
         main_window.metadata['num_frames'] = main_window.images.shape[0]
         main_window.display_slider.setMaximum(main_window.metadata['num_frames'] - 1)
+        
+        # Initialize 'eem' key
+        main_window.data['eem'] = [[None] * main_window.metadata['num_frames'], [None] * main_window.metadata['num_frames']]
 
         success = read_contours(main_window, main_window.file_name)
         if success:
@@ -76,6 +79,7 @@ def read_image(main_window):
                 'elliptic_ratio',
                 'vector_length',
                 'vector_angle',
+                'eem',
             ]:
                 main_window.data[key] = [0] * main_window.metadata['num_frames']
             main_window.data['phases'] = ['-'] * main_window.metadata['num_frames']
@@ -89,6 +93,7 @@ def read_image(main_window):
             main_window.data['reference'] = [None] * main_window.metadata['num_frames']
             main_window.data['gating_signal'] = {}
             main_window.display.set_data(main_window.data['lumen'], main_window.images)
+            main_window.display.set_data_eem(main_window.data['eem'], main_window.images)
 
         main_window.image_displayed = True
         main_window.display_slider.setValue(main_window.metadata['num_frames'] - 1)

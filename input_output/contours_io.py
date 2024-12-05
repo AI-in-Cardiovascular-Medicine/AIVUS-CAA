@@ -28,6 +28,8 @@ def read_contours(main_window, file_name=None):
             main_window.data['reference'] = [None] * main_window.metadata['num_frames']
         if 'gating_signal' not in main_window.data:  # added in version 0.7.4
             main_window.data['gating_signal'] = {}
+        if 'eem' not in main_window.data: # added in version 0.8.0
+            main_window.data['eem'] = [[None] * main_window.metadata['num_frames'], [None] * main_window.metadata['num_frames']]
         success = True
 
     elif xml_files:
@@ -57,6 +59,7 @@ def read_contours(main_window, file_name=None):
     if success:
         main_window.contours_drawn = True
         main_window.display.set_data(main_window.data['lumen'], main_window.images)
+        main_window.display.set_data_eem(main_window.data['eem'], main_window.images)
         main_window.hide_contours_box.setChecked(False)
 
     return success
