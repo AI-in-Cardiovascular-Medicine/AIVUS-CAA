@@ -26,6 +26,7 @@ gating:
   # Bandpass filter fractions relative to detected f_heart
   bandpass_lo_frac: 0.7      # lower cut: removes slow pullback trend (sub-cardiac drift)
   bandpass_hi_frac: 2.2      # upper cut: passes 2nd harmonic, removes speckle noise
+  breathing_bins: 4          # bins per breathing half-cycle for the Filtered sort
 
 report:
   plot: False

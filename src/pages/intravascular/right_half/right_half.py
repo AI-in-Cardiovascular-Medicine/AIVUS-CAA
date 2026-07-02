@@ -2,7 +2,16 @@ import bisect
 
 from functools import partial
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QSplitter, QPushButton, QWidget, QFrame, QLayout
+from PyQt6.QtWidgets import (
+    QHBoxLayout,
+    QVBoxLayout,
+    QSplitter,
+    QPushButton,
+    QButtonGroup,
+    QWidget,
+    QFrame,
+    QLayout,
+)
 
 from domain.all_types import OCT_QUALITY_LABELS
 from pages.intravascular.popup_windows.frame_range_dialog import FrameRangeDialog
@@ -50,7 +59,7 @@ class RightHalf:
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(mw.gating_display)
-        splitter.addWidget(mw.longitudinal_view)
+        splitter.addWidget(self._build_longitudinal_pane())
         gating_size = mw.gating_display.sizeHint().height()
         splitter.setSizes([gating_size, gating_size])
         splitter.setStretchFactor(0, mw.config.display.gating_display_stretch)
@@ -59,6 +68,51 @@ class RightHalf:
 
         vbox.addLayout(self._build_lower_buttons())
         return root
+
+    def _build_longitudinal_pane(self):
+        """Longitudinal view with a Raw/Filtered mode selector column on its left.
+
+        'Raw'      → images in acquisition order (default).
+        'Filtered' → gated frames reordered into breathing-corrected anatomical
+                     order (en bloc per cardiac cycle); the left-half slider then
+                     scrolls gated frames in this sorted order.
+        """
+        mw = self.main_window
+        pane = QWidget()
+        hbox = QHBoxLayout(pane)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(2)
+
+        btn_col = QVBoxLayout()
+        btn_col.setContentsMargins(2, 2, 2, 2)
+
+        self.raw_btn = QPushButton('Raw')
+        self.raw_btn.setCheckable(True)
+        self.raw_btn.setChecked(True)
+        self.raw_btn.setFixedWidth(70)
+        self.raw_btn.setToolTip('Show frames in acquisition (pullback) order')
+
+        self.filtered_btn = QPushButton('Filtered')
+        self.filtered_btn.setCheckable(True)
+        self.filtered_btn.setFixedWidth(70)
+        self.filtered_btn.setToolTip('Reorder gated frames into breathing-corrected order (en bloc per cardiac cycle)')
+
+        group = QButtonGroup(pane)
+        group.setExclusive(True)
+        group.addButton(self.raw_btn)
+        group.addButton(self.filtered_btn)
+        self._lview_mode_group = group  # keep reference
+
+        self.raw_btn.clicked.connect(partial(set_longitudinal_mode, mw, 'raw'))
+        self.filtered_btn.clicked.connect(partial(set_longitudinal_mode, mw, 'filtered'))
+
+        btn_col.addWidget(self.raw_btn)
+        btn_col.addWidget(self.filtered_btn)
+        btn_col.addStretch(1)
+
+        hbox.addLayout(btn_col)
+        hbox.addWidget(mw.longitudinal_view, stretch=1)
+        return pane
 
     def _build_oct(self):
         mw = self.main_window
@@ -217,6 +271,23 @@ def update_oct_display(main_window, frame):
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def set_longitudinal_mode(main_window, mode):
+    """Raw/Filtered toggle.
+
+    'Filtered' opens the breathing-sorted paired viewer (diastole | systole in
+    breathing-corrected order). 'Raw' just clears the status hint.
+    """
+    if not main_window.image_displayed:
+        return
+    if mode == 'filtered':
+        from pages.intravascular.popup_windows.breathing_sort_viewer import BreathingSortViewer
+
+        main_window.breathing_sort_viewer = BreathingSortViewer(main_window)
+        main_window.breathing_sort_viewer.show()
+    else:
+        main_window.status_bar.showMessage(main_window.waiting_status)
 
 
 def open_small_display(main_window):

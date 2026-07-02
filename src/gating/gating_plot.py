@@ -138,11 +138,16 @@ class GatingPlot:
         legend = self.ax.legend(ncol=2, loc='lower right')
         legend.set_draggable(True)
 
-        # Frequency-sweep button (bottom-left corner)
+        # Frequency-sweep buttons (bottom-left corner)
         ax_btn = self.fig.add_axes([0.01, 0.01, 0.12, 0.06])
         self._sweep_btn = Button(ax_btn, 'Freq. sweep', color='#333333', hovercolor='#555555')
         self._sweep_btn.label.set_color('white')
         self._sweep_btn.on_clicked(self._show_frequency_sweep)
+
+        ax_btn2 = self.fig.add_axes([0.14, 0.01, 0.14, 0.06])
+        self._breathing_sweep_btn = Button(ax_btn2, 'Breathing sweep', color='#333333', hovercolor='#555555')
+        self._breathing_sweep_btn.label.set_color('white')
+        self._breathing_sweep_btn.on_clicked(self._show_breathing_frequency_sweep)
 
         self.fig.canvas.mpl_connect('button_press_event', self.on_click)
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_motion)
@@ -264,6 +269,74 @@ class GatingPlot:
         win.resize(1300, 500)
         win.show()
         self._sweep_win = win  # keep reference so Qt GC doesn't destroy it
+
+    def _show_breathing_frequency_sweep(self, *_):
+        """Heatmap of area-residual low-pass filtered at increasing BrPM cutoffs.
+
+        Click a row to set that cutoff as the breathing filter and refresh the
+        longitudinal view overlay immediately.  The yellow line tracks the
+        currently active cutoff.
+        """
+        gs = getattr(self.main_window.runtime_data, 'gating_signal', None)
+        if not gs or 'breathing_residual' not in gs:
+            return
+
+        residual = np.array(gs['breathing_residual'])
+        frames = np.array(gs['breathing_frames'])
+        f_resp_current = gs.get('f_resp', 0.3)
+        fs = self.main_window.runtime_data.metadata['frame_rate']
+
+        brpm_cuts, sweep = pipeline.compute_breathing_frequency_sweep(residual, fs)
+        current_brpm = f_resp_current * 60
+
+        sweep_fig, ax_sw = plt.subplots(figsize=(13, 5))
+        sweep_fig.patch.set_facecolor('#1e1e1e')
+        ax_sw.set_facecolor('#1e1e1e')
+
+        ax_sw.pcolormesh(frames, brpm_cuts, sweep, cmap='RdBu_r', shading='auto')
+
+        (active_line,) = ax_sw.plot(
+            [frames[0], frames[-1]],
+            [current_brpm, current_brpm],
+            color='yellow',
+            lw=2,
+            label=f'LP cutoff: {current_brpm:.1f} BrPM',
+        )
+        ax_sw.axhline(current_brpm, color='#888888', lw=1.0, ls=':', label=f'Auto-detected: {current_brpm:.1f} BrPM')
+
+        ax_sw.set_xlabel('Frame', color='white')
+        ax_sw.set_ylabel('Low-pass cutoff (BrPM)', color='white')
+        ax_sw.set_title('Breathing frequency sweep — click a row to apply', color='white')
+        ax_sw.tick_params(colors='white')
+        for sp in ax_sw.spines.values():
+            sp.set_edgecolor('#555')
+        legend = ax_sw.legend(loc='upper right', facecolor='#333', labelcolor='white')
+        sweep_fig.tight_layout()
+
+        def on_sweep_click(ev):
+            if ev.inaxes != ax_sw or ev.ydata is None:
+                return
+            new_brpm = float(np.clip(ev.ydata, brpm_cuts[0], brpm_cuts[-1]))
+            new_hz = new_brpm / 60.0
+            active_line.set_ydata([new_brpm, new_brpm])
+            legend.get_texts()[0].set_text(f'LP cutoff: {new_brpm:.1f} BrPM')
+            sweep_fig.canvas.draw_idle()
+            gs['f_resp_override'] = new_hz
+            self.main_window.longitudinal_view.plot_areas()
+
+        canvas = FigureCanvasQTAgg(sweep_fig)
+        canvas.mpl_connect('button_press_event', on_sweep_click)
+
+        win = QMainWindow(self.main_window)
+        win.setWindowTitle('Breathing frequency sweep')
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(canvas)
+        win.setCentralWidget(container)
+        win.resize(1300, 500)
+        win.show()
+        self._breathing_sweep_win = win  # keep reference so Qt GC doesn't destroy it
 
     # ──────────────────────────────── mouse interaction ────
 
