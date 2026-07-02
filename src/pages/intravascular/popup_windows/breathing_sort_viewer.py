@@ -35,12 +35,17 @@ from loguru import logger
 
 from gating.gating_pipeline import (
     register_phase,
+    assign_breathing_bins,
     compute_breathing_signal,
     compute_breathing_phases,
 )
 from tools.geometry import SplineGeometry
 
 N_STRIP = 5  # thumbnails per filmstrip (odd → current one centred)
+# Persistence: the sort (peaks/valleys, ordered dia/sys indices, per-bin shifts)
+# is cached in runtime_data.gating_signal, which is written to / read from the
+# _contours_*.json automatically.  Reused when anchors are unchanged; membership
+# is reconciled when gated frames change; manual moves are stored immediately.
 
 
 class BreathingSortViewer(QMainWindow):
@@ -62,8 +67,16 @@ class BreathingSortViewer(QMainWindow):
         self.sys_sorted: list[int] = []
         self.dia_pos: dict[int, float] = {}
         self.sys_pos: dict[int, float] = {}
+        self.dia_shifts: list[float] = []
+        self.sys_shifts: list[float] = []
+        self.peaks: list[int] = []
+        self.valleys: list[int] = []
+        self.n_bins: int = 4
         self.dia_idx = 0
         self.sys_idx = 0
+        # index offset aligning the two phases at the ostium (most-proximal
+        # reference point); None → fall back to nearest-corrected-position pairing
+        self._anchor_offset = None
 
         self._compute_sort()
         self._build_ui()
@@ -110,12 +123,28 @@ class BreathingSortViewer(QMainWindow):
         valleys = [int(frames[i]) for i in vl if 0 <= i < len(frames)]
         return peaks, valleys
 
+    def _signature(self, peaks, valleys, n_bins):
+        """Identity of the anchors a sort was built from (to detect changes)."""
+        return {
+            'peaks': sorted(int(p) for p in peaks),
+            'valleys': sorted(int(v) for v in valleys),
+            'n_bins': int(n_bins),
+        }
+
     def _compute_sort(self):
+        """Reuse the stored sort when the breathing anchors are unchanged; else
+        recompute.  Either way, reconcile membership with the current gated sets
+        (drop removed frames, insert newly-gated ones) so manual ordering is kept.
+        """
         rt = self.main_window.runtime_data
+        if rt.gating_signal is None:
+            rt.gating_signal = {}
+        gs = rt.gating_signal
+
         area_of = self._areas()
+        self.n_bins = int(getattr(self.main_window.config.gating, 'breathing_bins', 4))
+        self.peaks, self.valleys = self._breathing_anchors(area_of)
         n_total = int(rt.metadata.get('num_frames', 0)) or (len(rt.images) if rt.images is not None else 0)
-        n_bins = int(getattr(self.main_window.config.gating, 'breathing_bins', 4))
-        peaks, valleys = self._breathing_anchors(area_of)
 
         dia = [f for f in sorted(rt.gated_frames_dia) if f in area_of]
         sys = [f for f in sorted(rt.gated_frames_sys) if f in area_of]
@@ -123,28 +152,111 @@ class BreathingSortViewer(QMainWindow):
             logger.info('Breathing sort: too few diastolic frames with contours')
             return
 
+        sig = self._signature(self.peaks, self.valleys, self.n_bins)
+        cached = gs.get('sort_signature') == sig and gs.get('sort_dia_order') is not None
+
+        if cached:
+            logger.info('Breathing sort: reusing stored order (anchors unchanged)')
+            self.dia_sorted = [int(f) for f in gs.get('sort_dia_order', [])]
+            self.sys_sorted = [int(f) for f in gs.get('sort_sys_order', [])]
+            self.dia_pos = {int(f): float(p) for f, p in gs.get('sort_dia_pos', [])}
+            self.sys_pos = {int(f): float(p) for f, p in gs.get('sort_sys_pos', [])}
+            self.dia_shifts = [float(s) for s in gs.get('sort_dia_shifts', [])]
+            self.sys_shifts = [float(s) for s in gs.get('sort_sys_shifts', [])]
+            self.dia_sorted = self._reconcile(self.dia_sorted, dia, self.dia_pos, self.dia_shifts)
+            self.sys_sorted = self._reconcile(self.sys_sorted, sys, self.sys_pos, self.sys_shifts)
+        else:
+            logger.info('Breathing sort: recomputing (anchors changed / no cache)')
+            self._recompute(dia, sys, area_of, n_total)
+
+        if self.dia_sorted:
+            self._store_sort()
+        self._update_anchor()
+
+    def _update_anchor(self):
+        """Compute the dia→sys index offset that lines up the two ostium
+        (most-proximal, highest-frame-index) reference points, one per phase.
+
+        Pairing by this fixed offset keeps diastole and systole aligned even when
+        the two phases have different frame counts (e.g. ostium has only
+        diastole).  None if either phase has no reference point → caller falls
+        back to nearest-corrected-position pairing.
+        """
+        self._anchor_offset = None
+        if not self.dia_sorted or not self.sys_sorted:
+            return
+        fdd = self.main_window.runtime_data.frame_data_dct or {}
+        dia_refs = [f for f in self.dia_sorted if fdd.get(f) is not None and fdd[f].reference is not None]
+        sys_refs = [f for f in self.sys_sorted if fdd.get(f) is not None and fdd[f].reference is not None]
+        if not dia_refs or not sys_refs:
+            return
+        dia_ostium = max(dia_refs)  # highest frame index = most proximal = ostium
+        sys_ostium = max(sys_refs)
+        self._anchor_offset = self.sys_sorted.index(sys_ostium) - self.dia_sorted.index(dia_ostium)
+        logger.info(f'Breathing sort: ostium anchor offset dia→sys = {self._anchor_offset}')
+
+    def _recompute(self, dia, sys, area_of, n_total):
         Rd = register_phase(
             np.array(dia, float),
             np.array([area_of[f] for f in dia], float),
-            peaks,
-            valleys,
-            n_bins=n_bins,
+            self.peaks,
+            self.valleys,
+            n_bins=self.n_bins,
             n_total=n_total,
         )
         self.dia_sorted = [dia[i] for i in Rd['order']]
         self.dia_pos = {dia[i]: float(Rd['corrected'][i]) for i in range(len(dia))}
+        self.dia_shifts = [float(s) for s in Rd['shifts']]
 
+        self.sys_sorted, self.sys_pos, self.sys_shifts = [], {}, []
         if len(sys) >= 5:
             Rs = register_phase(
                 np.array(sys, float),
                 np.array([area_of[f] for f in sys], float),
-                peaks,
-                valleys,
-                n_bins=n_bins,
+                self.peaks,
+                self.valleys,
+                n_bins=self.n_bins,
                 n_total=n_total,
             )
             self.sys_sorted = [sys[i] for i in Rs['order']]
             self.sys_pos = {sys[i]: float(Rs['corrected'][i]) for i in range(len(sys))}
+            self.sys_shifts = [float(s) for s in Rs['shifts']]
+
+    def _reconcile(self, order, current_frames, pos_map, shifts):
+        """Drop frames no longer gated and insert newly-gated ones by corrected
+        position, preserving the existing (possibly hand-edited) order otherwise."""
+        current = set(current_frames)
+        new_order = [f for f in order if f in current]
+        existing = set(new_order)
+        for f in current_frames:
+            if f in existing:
+                continue
+            # corrected position of the new frame from its bin's stored shift
+            b = int(assign_breathing_bins(np.array([f]), self.peaks, self.valleys, self.n_bins)[0])
+            shift = shifts[b] if 0 <= b < len(shifts) else 0.0
+            pos = float(f) + float(shift)
+            pos_map[f] = pos
+            insert_at = len(new_order)
+            for idx, g in enumerate(new_order):
+                if pos < pos_map.get(g, float(g)):
+                    insert_at = idx
+                    break
+            new_order.insert(insert_at, f)
+        return new_order
+
+    def _store_sort(self):
+        """Persist the current sort into gating_signal (auto-saved to the JSON)."""
+        gs = self.main_window.runtime_data.gating_signal
+        gs['sort_signature'] = self._signature(self.peaks, self.valleys, self.n_bins)
+        gs['sort_peaks'] = sorted(int(p) for p in self.peaks)
+        gs['sort_valleys'] = sorted(int(v) for v in self.valleys)
+        gs['sort_n_bins'] = int(self.n_bins)
+        gs['sort_dia_order'] = [int(f) for f in self.dia_sorted]
+        gs['sort_sys_order'] = [int(f) for f in self.sys_sorted]
+        gs['sort_dia_pos'] = [[int(f), float(p)] for f, p in self.dia_pos.items()]
+        gs['sort_sys_pos'] = [[int(f), float(p)] for f, p in self.sys_pos.items()]
+        gs['sort_dia_shifts'] = [float(s) for s in self.dia_shifts]
+        gs['sort_sys_shifts'] = [float(s) for s in self.sys_shifts]
 
     def _nearest_sys(self, corrected_pos: float) -> int:
         if not self.sys_sorted:
@@ -347,8 +459,12 @@ class BreathingSortViewer(QMainWindow):
     # ------------------------------------------------------------------
     def _on_slider(self, v):
         self.dia_idx = v
-        if self.dia_sorted:
-            self.sys_idx = self._nearest_sys(self.dia_pos[self.dia_sorted[v]])
+        if self.dia_sorted and self.sys_sorted:
+            if self._anchor_offset is not None:
+                # align at the ostium reference: fixed offset from the anchor
+                self.sys_idx = max(0, min(len(self.sys_sorted) - 1, v + self._anchor_offset))
+            else:
+                self.sys_idx = self._nearest_sys(self.dia_pos[self.dia_sorted[v]])
         # keep swap "A" pointing at the current slot of the selected phase
         if self.phase_combo.currentText() == 'Diastole':
             self.swap_a.setValue(min(v, self.swap_a.maximum()))
@@ -377,6 +493,8 @@ class BreathingSortViewer(QMainWindow):
             return
         frame = seq.pop(a)
         seq.insert(b, frame)
+        self._store_sort()  # persist the manual reordering
+        self._update_anchor()  # ostium offset may have shifted after reordering
         # follow the moved frame if we're viewing that phase
         if phase == 'Diastole':
             self.slider.setValue(b)
