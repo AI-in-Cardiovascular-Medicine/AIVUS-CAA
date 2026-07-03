@@ -218,6 +218,7 @@ class LongitudinalView(QGraphicsView):
             fs=fs,
             f_heart=f_heart,
             f_resp_override=f_resp_override,
+            cache=gs,
         )
         residual = breathing['residual']
         smoothed = breathing['smoothed']

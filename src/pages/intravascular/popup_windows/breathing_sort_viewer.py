@@ -107,7 +107,10 @@ class BreathingSortViewer(QMainWindow):
         return out
 
     def _breathing_anchors(self, area_of):
-        gs = self.main_window.runtime_data.gating_signal or {}
+        rt = self.main_window.runtime_data
+        if rt.gating_signal is None:
+            rt.gating_signal = {}
+        gs = rt.gating_signal
         peaks = list(gs.get('breathing_manual_peaks') or gs.get('breathing_auto_peaks') or [])
         valleys = list(gs.get('breathing_manual_valleys') or gs.get('breathing_auto_valleys') or [])
         if peaks and valleys:
@@ -116,8 +119,8 @@ class BreathingSortViewer(QMainWindow):
             return peaks, valleys
         frames = np.array(sorted(area_of.keys()), dtype=float)
         areas = np.array([area_of[int(f)] for f in frames])
-        fs = float(self.main_window.runtime_data.metadata.get('frame_rate', 30))
-        breathing = compute_breathing_signal(frames, areas, fs=fs, f_heart=gs.get('f_heart'))
+        fs = float(rt.metadata.get('frame_rate', 30))
+        breathing = compute_breathing_signal(frames, areas, fs=fs, f_heart=gs.get('f_heart'), cache=gs)
         _, pk, vl = compute_breathing_phases(breathing['smoothed'], frames_arr=frames)
         peaks = [int(frames[i]) for i in pk if 0 <= i < len(frames)]
         valleys = [int(frames[i]) for i in vl if 0 <= i < len(frames)]

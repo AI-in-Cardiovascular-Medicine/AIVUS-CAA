@@ -223,6 +223,28 @@ def compute_correlation_signal(frames: np.ndarray) -> np.ndarray:
     return s
 
 
+def fft_peak_freq(
+    signal: np.ndarray,
+    fs: float,
+    f_min: float,
+    f_max: float,
+    label: str = "spectral",
+) -> float:
+    """Dominant FFT spectral peak frequency within [f_min, f_max] Hz.
+
+    Falls back to the band midpoint (with a warning) if the band contains no
+    frequency bin, e.g. a signal too short for the given fs.
+    """
+    sig = np.nan_to_num(signal - np.nanmean(signal))
+    freqs = np.fft.rfftfreq(len(sig), d=1.0 / fs)
+    spectrum = np.abs(np.fft.rfft(sig))
+    mask = (freqs >= f_min) & (freqs <= f_max)
+    if not mask.any():
+        logger.warning(f"No {label} spectral peak in [{f_min}, {f_max}] Hz -> using midpoint")
+        return (f_min + f_max) / 2
+    return float(freqs[mask][np.argmax(spectrum[mask])])
+
+
 def detect_heart_rate(
     signal: np.ndarray,
     fs: float,
@@ -230,14 +252,7 @@ def detect_heart_rate(
     f_max: float = 3.5,
 ) -> float:
     """Dominant heart rate via FFT spectral peak in physiological range [Hz]."""
-    sig = np.nan_to_num(signal - np.nanmean(signal))
-    freqs = np.fft.rfftfreq(len(sig), d=1.0 / fs)
-    spectrum = np.abs(np.fft.rfft(sig))
-    mask = (freqs >= f_min) & (freqs <= f_max)
-    if not mask.any():
-        logger.warning(f"No spectral peak in [{f_min}, {f_max}] Hz -> using midpoint")
-        return (f_min + f_max) / 2
-    f_heart = float(freqs[mask][np.argmax(spectrum[mask])])
+    f_heart = fft_peak_freq(signal, fs, f_min, f_max, label="heart rate")
     logger.info(f"Heart rate: {f_heart:.3f} Hz  ({f_heart * 60:.0f} BPM)")
 
     # The 1-NCC signal has strong power at 2xf_heart (two motion events per cycle).

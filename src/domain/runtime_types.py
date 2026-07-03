@@ -27,6 +27,8 @@ class GatingSignal(TypedDict, total=False):
     freq_sweep_signals: list[float]
     f_resp: float
     f_resp_override: float
+    breathing_cache_signature: dict[str, Any]
+    breathing_cache_result: dict[str, Any]
     breathing_residual: list[float]
     breathing_frames: list[int]
     breathing_display_signal: list[float]

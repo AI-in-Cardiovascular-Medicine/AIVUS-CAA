@@ -1,7 +1,7 @@
 import numpy as np
 from loguru import logger
 from gating.automatic_gating import walk_extrema
-from gating.gating_pipeline import lowpass_filter
+from gating.gating_pipeline import lowpass_filter, fft_peak_freq
 
 
 def compute_breathing_signal(
@@ -13,6 +13,7 @@ def compute_breathing_signal(
     f_resp_override: float | None = None,
     poly_deg: int = 2,
     gated_weight: float = 10.0,
+    cache: dict | None = None,
 ) -> dict:
     """
     Detrend the lumen-area sequence and extract the respiratory oscillation.
@@ -26,17 +27,54 @@ def compute_breathing_signal(
     3. Detect the respiratory rate on the residual (or use ``f_resp_override``)
        and low-pass filter the residual at 2x that rate to isolate breathing.
 
-    Returns a dict with keys: ``frames``, ``areas``, ``trend``, ``slope``
-    (dArea/dFrame of the trend), ``residual``, ``smoothed`` (breathing wave),
-    and ``f_resp`` (Hz).  The trend slope is what converts an area residual into
-    a longitudinal position offset for the sort.
+    Parameters
+    ----------
+    frames_arr : (N,) array of frame numbers
+    areas_arr : (N,) array of lumen areas (mm²)
+    gated_frames : set of frame numbers to be given extra weight
+    fs : sampling frequency (frames/sec)
+    f_heart : heart rate (Hz) to expand the search range for breathing rate
+    f_resp_override : override the detected breathing rate (Hz)
+    poly_deg : degree of polynomial to fit the trend
+    gated_weight : weight for gated frames
+    cache : optional dict (typically ``runtime_data.gating_signal``) to read/write
+        a cached result from. Callers like plot redraws invoke this on nearly
+        every user action, so a signature over the inputs lets an unchanged
+        pullback skip the polyfit + FFT + filtfilt work entirely.
+
+    Returns
+    -------
+    dict with keys:
+        frames : (N,) array of frame numbers
+        areas : (N,) array of lumen areas (mm²)
+        trend : (N,) polynomial trend fit to area vs. frame
+        slope : (N,) derivative of the trend (mm²/frame)
+        residual : (N,) area - trend
+        smoothed : (N,) low-pass filtered residual at 2x breathing rate
+        f_resp : detected or overridden breathing rate (Hz)
     """
     frames_arr = np.asarray(frames_arr, dtype=float)
     areas_arr = np.asarray(areas_arr, dtype=float)
     n = len(frames_arr)
+
+    signature = {
+        'frames': frames_arr.tolist(),
+        'areas': areas_arr.tolist(),
+        'gated_frames': sorted(int(f) for f in gated_frames) if gated_frames else [],
+        'fs': fs,
+        'f_heart': f_heart,
+        'f_resp_override': f_resp_override,
+        'poly_deg': poly_deg,
+        'gated_weight': gated_weight,
+    }
+    if cache is not None and cache.get('breathing_cache_signature') == signature:
+        cached_result = cache.get('breathing_cache_result')
+        if cached_result is not None:
+            return {k: np.asarray(v) if isinstance(v, (list, np.ndarray)) else v for k, v in cached_result.items()}
+
     if n < 3:
         zeros = np.zeros(n)
-        return {
+        result = {
             'frames': frames_arr,
             'areas': areas_arr,
             'trend': areas_arr.copy(),
@@ -45,33 +83,39 @@ def compute_breathing_signal(
             'smoothed': zeros,
             'f_resp': 0.0,
         }
-
-    weights = np.ones(n)
-    if gated_frames:
-        weights = np.where(np.isin(frames_arr.astype(int), list(gated_frames)), gated_weight, 1.0)
-
-    deg = min(poly_deg, n - 1)
-    coeffs = np.polyfit(frames_arr, areas_arr, deg=deg, w=weights)
-    trend = np.polyval(coeffs, frames_arr)
-    # Analytic derivative of the polynomial trend -> local taper slope (mm²/frame).
-    slope = np.polyval(np.polyder(coeffs), frames_arr)
-    residual = areas_arr - trend
-
-    if f_resp_override is not None:
-        f_resp = float(f_resp_override)
     else:
-        f_resp = detect_breathing_rate(residual, fs, f_heart)
-    smoothed = extract_breathing_signal(residual, f_resp, fs)
+        weights = np.ones(n)
+        if gated_frames:
+            weights = np.where(np.isin(frames_arr.astype(int), list(gated_frames)), gated_weight, 1.0)
 
-    return {
-        'frames': frames_arr,
-        'areas': areas_arr,
-        'trend': trend,
-        'slope': slope,
-        'residual': residual,
-        'smoothed': smoothed,
-        'f_resp': f_resp,
-    }
+        deg = min(poly_deg, n - 1)
+        coeffs = np.polyfit(frames_arr, areas_arr, deg=deg, w=weights)
+        trend = np.polyval(coeffs, frames_arr)
+        # Analytic derivative of the polynomial trend -> local taper slope (mm²/frame).
+        slope = np.polyval(np.polyder(coeffs), frames_arr)
+        residual = areas_arr - trend
+
+        if f_resp_override is not None:
+            f_resp = float(f_resp_override)
+        else:
+            f_resp = detect_breathing_rate(residual, fs, f_heart)
+        smoothed = extract_breathing_signal(residual, f_resp, fs)
+
+        result = {
+            'frames': frames_arr,
+            'areas': areas_arr,
+            'trend': trend,
+            'slope': slope,
+            'residual': residual,
+            'smoothed': smoothed,
+            'f_resp': f_resp,
+        }
+
+    if cache is not None:
+        cache['breathing_cache_signature'] = signature
+        cache['breathing_cache_result'] = result
+
+    return result
 
 
 def detect_breathing_rate(
@@ -89,14 +133,7 @@ def detect_breathing_rate(
     if f_heart_hz is not None and f_heart_hz * 60 > 100:
         f_resp_max = 60 / 60  # 1.00 Hz
 
-    sig = np.nan_to_num(signal - np.nanmean(signal))
-    freqs = np.fft.rfftfreq(len(sig), d=1.0 / fs)
-    spectrum = np.abs(np.fft.rfft(sig))
-    mask = (freqs >= f_resp_min) & (freqs <= f_resp_max)
-    if not mask.any():
-        logger.warning(f"No respiratory spectral peak in [{f_resp_min:.2f}, {f_resp_max:.2f}] Hz")
-        return (f_resp_min + f_resp_max) / 2
-    f_resp = float(freqs[mask][np.argmax(spectrum[mask])])
+    f_resp = fft_peak_freq(signal, fs, f_resp_min, f_resp_max, label="respiratory")
     logger.info(f"Respiratory rate: {f_resp:.3f} Hz  ({f_resp * 60:.1f} BrPM)")
     return f_resp
 
