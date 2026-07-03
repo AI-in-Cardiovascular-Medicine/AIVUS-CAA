@@ -120,6 +120,7 @@ class GatingPlot:
 
         self.fig = self.main_window.gating_display.fig
         self.fig.clear()
+        self.frame_marker = None
         self.ax = self.fig.add_subplot()
 
         # Filtered signals - primary visual focus
@@ -286,7 +287,7 @@ class GatingPlot:
         f_resp_current = gs.get('f_resp', 0.3)
         fs = self.main_window.runtime_data.metadata['frame_rate']
 
-        brpm_cuts, sweep = pipeline.compute_breathing_frequency_sweep(residual, fs)
+        brpm_cuts, sweep = pipeline.compute_frequency_sweep(residual, fs, bpm_lo=10.0, bpm_hi=60.0)
         current_brpm = f_resp_current * 60
 
         sweep_fig, ax_sw = plt.subplots(figsize=(13, 5))
@@ -419,7 +420,10 @@ class GatingPlot:
             return
         self.ax.set_autoscale_on(False)
         if self.frame_marker:
-            self.frame_marker[0].remove()
+            try:
+                self.frame_marker[0].remove()
+            except NotImplementedError:
+                pass
         self.frame_marker = self.ax.plot(frame + 1, self.ax.get_ylim()[0], 'yo', clip_on=False)
         self._draw()
 

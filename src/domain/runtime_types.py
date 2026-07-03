@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 
@@ -15,6 +15,39 @@ class CctaRuntimeData:
         self.labels: list[int] = []  # non-background labels present in mask
 
 
+class GatingSignal(TypedDict, total=False):
+    image_based_gating: list[float]
+    contour_based_gating: list[float]
+    image_based_gating_filtered: list[float]
+    contour_based_gating_filtered: list[float]
+    gating_config: dict[str, Any]
+    f_heart: float
+    f_heart_bpm: float
+    freq_sweep_bpm_cuts: list[float]
+    freq_sweep_signals: list[float]
+    f_resp: float
+    f_resp_override: float
+    breathing_residual: list[float]
+    breathing_frames: list[int]
+    breathing_display_signal: list[float]
+    breathing_phase: list[float]
+    breathing_auto_peaks: list[int]
+    breathing_auto_valleys: list[int]
+    breathing_manual_mode: bool
+    breathing_manual_peaks: list[int]
+    breathing_manual_valleys: list[int]
+    sort_signature: dict[str, Any]
+    sort_peaks: list[int]
+    sort_valleys: list[int]
+    sort_n_bins: int
+    sort_dia_order: list[int]
+    sort_sys_order: list[int]
+    sort_dia_pos: list[list[float]]
+    sort_sys_pos: list[list[float]]
+    sort_dia_shifts: list[float]
+    sort_sys_shifts: list[float]
+
+
 class RuntimeData:
     def __init__(self):
         self.frame_data_dct: dict[int, FrameData] | None = None
@@ -26,4 +59,4 @@ class RuntimeData:
         self.gated_frames_sys: list[int] = []
         self.tagged_frames: list[int] = []
         self.tmp_contours: dict[str, tuple[list[float], list[float]]] = {}
-        self.gating_signal: dict[str, Any] = {}
+        self.gating_signal: GatingSignal = {}

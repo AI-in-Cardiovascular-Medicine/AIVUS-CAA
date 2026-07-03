@@ -6,7 +6,7 @@ peak/valley phase computation with manual hard-anchor override.
 """
 import numpy as np
 
-from gating.gating_pipeline import (
+from gating.breathing_pipeline import (
     compute_breathing_signal,
     compute_breathing_phases,
     assign_breathing_bins,

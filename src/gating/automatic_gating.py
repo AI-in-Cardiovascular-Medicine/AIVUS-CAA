@@ -1,7 +1,86 @@
 import numpy as np
 from loguru import logger
 
-from gating.gating_pipeline import walk_extrema, filter_by_period
+from gating.gating_pipeline import filter_by_period
+
+
+def walk_extrema(
+    signal: np.ndarray,
+    swing_fraction: float = 0.15,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Hysteresis-gated turning-point detector.
+
+    Walks the signal and registers a local maximum only after the value has
+    dropped more than *swing_fraction* x peak-to-peak below the running high
+    since the last confirmed turning point; vice versa for minima.
+    *Note: Tested performance against scipy.signal.find_peaks()
+    and found it more robust for IVUS gating signals.*
+
+    Advantages over scipy find_peaks:
+    - No global height threshold: amplitude-agnostic, adapts to signal level.
+    - No minimum-distance parameter: the hysteresis swing alone suppresses
+    micro-wiggles caused by residual noise on the bandpass-filtered signal.
+    - Produces a naturally alternating max / min / max / min sequence that
+    maps directly to cardiac phases without post-hoc alternation heuristics.
+
+    Parameters
+    ----------
+    signal         : 1-D array (bandpass-filtered, normalised).
+    swing_fraction : fraction of peak-to-peak range a reversal must exceed
+                    before a turning point is registered.  0.15 (15%) works
+                    well for IVUS bandpass-filtered signals.
+
+    Returns
+    -------
+    all_extrema_idx : sorted union of maxima and minima indices
+    maxima_idx      : indices of local maxima (high motion / end-phase peaks)
+    minima_idx      : indices of local minima
+    """
+    sig = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
+    ptp = float(sig.max() - sig.min())
+    empty: np.ndarray = np.array([], dtype=int)
+    if ptp == 0.0:
+        return empty, empty, empty
+
+    threshold = swing_fraction * ptp
+    maxima: list[int] = []
+    minima: list[int] = []
+
+    # direction: +1 = currently tracking a rising run (looking for maximum)
+    #            -1 = currently tracking a falling run (looking for minimum)
+    #            None = not yet determined (waiting for first significant swing)
+    direction: int | None = None
+    extreme_val = sig[0]
+    extreme_idx = 0
+
+    for i in range(1, len(sig)):
+        v = sig[i]
+        if direction is None:
+            if v - sig[0] >= threshold:
+                direction = 1
+                extreme_val, extreme_idx = v, i
+            elif sig[0] - v >= threshold:
+                direction = -1
+                extreme_val, extreme_idx = v, i
+        elif direction == 1:
+            if v > extreme_val:
+                extreme_val, extreme_idx = v, i
+            elif extreme_val - v >= threshold:
+                maxima.append(extreme_idx)
+                direction = -1
+                extreme_val, extreme_idx = v, i
+        else:  # direction == -1
+            if v < extreme_val:
+                extreme_val, extreme_idx = v, i
+            elif v - extreme_val >= threshold:
+                minima.append(extreme_idx)
+                direction = 1
+                extreme_val, extreme_idx = v, i
+
+    maxima_idx = np.array(maxima, dtype=int)
+    minima_idx = np.array(minima, dtype=int)
+    all_extrema = np.sort(np.concatenate([maxima_idx, minima_idx]))
+    return all_extrema, maxima_idx, minima_idx
 
 
 class AutomaticGating:
@@ -10,7 +89,7 @@ class AutomaticGating:
         self.report_data = report_data
         self.lower_limit = lower_limit
 
-    def _sig_to_frame_key(self, sig_idx: int) -> int:
+    def _signal_to_frame_key(self, sig_idx: int) -> int:
         return self.lower_limit + int(sig_idx)
 
     def automatic_gating(self, image_filtered: np.ndarray, contour_filtered: np.ndarray) -> None:
@@ -113,7 +192,7 @@ class AutomaticGating:
         sys_frames: list[int] = []
         for i in img_maxima:
             nearest = int(np.argmin(np.abs(all_area - i)))
-            frame_key = self._sig_to_frame_key(i)
+            frame_key = self._signal_to_frame_key(i)
             if tags[nearest] == -1:  # area minimum = diastole
                 dia_frames.append(frame_key)
             else:
@@ -129,8 +208,8 @@ class AutomaticGating:
         first_sig = maxima[::2].tolist()
         second_sig = maxima[1::2].tolist()
 
-        first_frames = [self._sig_to_frame_key(i) for i in first_sig]
-        second_frames = [self._sig_to_frame_key(i) for i in second_sig]
+        first_frames = [self._signal_to_frame_key(i) for i in first_sig]
+        second_frames = [self._signal_to_frame_key(i) for i in second_sig]
 
         N = len(image_filtered)
         amp_f = self._mean_amp(image_filtered, first_frames, N)

@@ -202,7 +202,7 @@ class LongitudinalView(QGraphicsView):
         frames_arr = np.array(sorted(areas.keys()), dtype=float)
         areas_arr = np.array([areas[int(f)] for f in frames_arr])
 
-        from gating.gating_pipeline import compute_breathing_signal, compute_breathing_phases
+        from gating.breathing_pipeline import compute_breathing_signal, compute_breathing_phases
 
         rt = self.main_window.runtime_data
         gated_set = set(getattr(rt, 'gated_frames_dia', [])) | set(getattr(rt, 'gated_frames_sys', []))

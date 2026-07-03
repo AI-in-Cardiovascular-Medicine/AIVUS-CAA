@@ -9,12 +9,11 @@ from gating.gating_pipeline import (
     detect_heart_rate,
     bandpass_filter,
     lowpass_filter,
-    compute_lumen_area_signal,
+    compute_lumen_signal as compute_lumen_area_signal,
     compute_frequency_sweep,
-    walk_extrema,
     filter_by_period,
 )
-from gating.automatic_gating import AutomaticGating
+from gating.automatic_gating import AutomaticGating, walk_extrema
 
 
 def _ag(lower_limit=0):
@@ -228,18 +227,18 @@ class TestComputeLumenAreaSignal:
 class TestComputeFrequencySweep:
     def test_output_shapes(self):
         sig = _sine(1.5, fs=30.0, n=100)
-        bpm_cuts, sweep = compute_frequency_sweep(sig, fs=30.0, f_heart=1.5, n_steps=10)
+        bpm_cuts, sweep = compute_frequency_sweep(sig, fs=30.0, n_steps=10)
         assert bpm_cuts.shape == (10,)
         assert sweep.shape == (10, 100)
 
-    def test_bpm_range_starts_at_half_heart_rate(self):
+    def test_bpm_range_starts_at_bpm_lo(self):
         sig = _sine(2.0, fs=50.0, n=200)
-        bpm_cuts, _ = compute_frequency_sweep(sig, fs=50.0, f_heart=2.0, n_steps=15)
-        assert bpm_cuts[0] == pytest.approx(0.5 * 2.0 * 60, rel=0.01)
+        bpm_cuts, _ = compute_frequency_sweep(sig, fs=50.0, n_steps=15, bpm_lo=40.0, bpm_hi=200.0)
+        assert bpm_cuts[0] == pytest.approx(40.0, rel=0.01)
 
     def test_bpm_cuts_monotonically_increasing(self):
         sig = _sine(1.5, fs=30.0, n=100)
-        bpm_cuts, _ = compute_frequency_sweep(sig, fs=30.0, f_heart=1.5, n_steps=10)
+        bpm_cuts, _ = compute_frequency_sweep(sig, fs=30.0, n_steps=10)
         assert np.all(np.diff(bpm_cuts) > 0)
 
 
@@ -348,12 +347,12 @@ class TestFilterByPeriod:
 class TestAutomaticGatingSigToFrameKey:
     def test_with_zero_offset(self):
         ag = _ag(lower_limit=0)
-        assert ag._sig_to_frame_key(7) == 7
+        assert ag._signal_to_frame_key(7) == 7
 
     def test_with_nonzero_offset(self):
         ag = _ag(lower_limit=10)
-        assert ag._sig_to_frame_key(5) == 15
-        assert ag._sig_to_frame_key(0) == 10
+        assert ag._signal_to_frame_key(5) == 15
+        assert ag._signal_to_frame_key(0) == 10
 
 
 class TestClassifyByAreaExtrema:

@@ -33,7 +33,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QImage, QPen, QColor, QPainterPath
 from loguru import logger
 
-from gating.gating_pipeline import (
+from gating.breathing_pipeline import (
     register_phase,
     assign_breathing_bins,
     compute_breathing_signal,
