@@ -48,6 +48,19 @@ N_STRIP = 5  # thumbnails per filmstrip (odd → current one centred)
 # is reconciled when gated frames change; manual moves are stored immediately.
 
 
+class _StepSlider(QSlider):
+    """QSlider that steps by exactly 1 per wheel notch.
+
+    Qt's default wheelEvent multiplies each notch by wheelScrollLines()
+    (usually 3), so scrolling would skip frames.
+    """
+
+    def wheelEvent(self, ev):
+        step = 1 if ev.angleDelta().y() > 0 else -1
+        self.setValue(self.value() + step)
+        ev.accept()
+
+
 class BreathingSortViewer(QMainWindow):
     def __init__(self, main_window):
         super().__init__(main_window)
@@ -309,7 +322,7 @@ class BreathingSortViewer(QMainWindow):
         vbox.addLayout(row, stretch=1)
 
         # central slider (main navigation through the sorted slots)
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = _StepSlider(Qt.Orientation.Horizontal)
         self.slider.valueChanged.connect(self._on_slider)
         vbox.addWidget(self.slider)
 

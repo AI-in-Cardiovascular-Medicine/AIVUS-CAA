@@ -152,26 +152,6 @@ def extract_breathing_signal(
     return lowpass_filter(area_signal, f_cutoff, fs)
 
 
-def _alternate_anchors(points: list[tuple[int, str]]) -> list[tuple[int, str]]:
-    """Force a peak/valley point list into a strictly alternating sequence.
-
-    Consecutive same-type anchors get a synthetic opposite anchor inserted at
-    their midpoint, so the half-cycle phase model (0.5 per step) stays valid
-    even when the user labels two peaks with no valley between them.
-    """
-    if len(points) < 2:
-        return points
-    out: list[tuple[int, str]] = [points[0]]
-    for f, t in points[1:]:
-        pf, pt = out[-1]
-        if t == pt and f != pf:
-            mid = (pf + f) // 2
-            if mid not in (pf, f):
-                out.append((mid, 'p' if t == 'v' else 'v'))
-        out.append((f, t))
-    return out
-
-
 def compute_breathing_phases(
     breathing_signal: np.ndarray,
     manual_peaks: list[int] | None = None,
@@ -226,8 +206,7 @@ def compute_breathing_phases(
     manual_all = man_peak_idx + man_valley_idx
 
     if manual_only:
-        # Use ONLY the user's labels — no automatic detection at all. Everything
-        # shown is then a real, deletable label and nothing hidden drives phase.
+        # Use ONLY the user's labels
         peaks_idx = np.array(sorted(set(man_peak_idx)), dtype=int)
         valleys_idx = np.array(sorted(set(man_valley_idx)), dtype=int)
     else:
@@ -265,9 +244,29 @@ def compute_breathing_phases(
     return phase, peaks_idx, valleys_idx
 
 
+def _alternate_anchors(points: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Force a peak/valley point list into a strictly alternating sequence.
+
+    Consecutive same-type anchors get a synthetic opposite anchor inserted at
+    their midpoint, so the half-cycle phase model (0.5 per step) stays valid
+    even when the user labels two peaks with no valley between them.
+    """
+    if len(points) < 2:
+        return points
+    out: list[tuple[int, str]] = [points[0]]
+    for f, t in points[1:]:
+        pf, pt = out[-1]
+        if t == pt and f != pf:
+            mid = (pf + f) // 2
+            if mid not in (pf, f):
+                out.append((mid, 'p' if t == 'v' else 'v'))
+        out.append((f, t))
+    return out
+
+
 # ─────────────── breathing-bin registration sort (gated frames only) ────
 #
-# Idea (per phase — diastole and systole are handled independently):
+# Idea (per phase - diastole and systole are handled independently):
 #   * The labelled valleys are the vessel at rest (displacement 0); peaks are max
 #     displacement.  Each breathing half-cycle (valley->peak and peak->valley) is
 #     split into the same number of bins, and by symmetry the ascending and
@@ -285,9 +284,11 @@ def assign_breathing_bins(
     frames: np.ndarray,
     peaks: list[int],
     valleys: list[int],
-    n_bins: int = 4,
+    n_bins: int = 5,
 ) -> np.ndarray:
     """Assign each frame to a displacement bin 0..n_bins-1 (0 = valley / rest).
+    Bins are needed to adjust for unregular breathing, were longer and shorter half-cycles
+    can occur. The binning harmonizes the displacement.
 
     Ascending (valley->peak) maps displacement 0->max as bin 0->n_bins-1; descending
     (peak->valley) is mirrored so it shares the same bins by displacement.  Frames

@@ -183,7 +183,7 @@ class LongitudinalView(QGraphicsView):
         """Compute and overlay a respiratory envelope derived from the area dots.
 
         Detrends the area signal (removes the pullback taper), low-pass filters
-        at ~2× the respiratory rate to isolate breathing, and marks peaks (cyan)
+        at ~2x the respiratory rate to isolate breathing, and marks peaks (cyan)
         and valleys (magenta).  Peaks/valleys can be edited with the Peak / Valley
         / Delete buttons; once the user edits, the markers become fully manual
         (seeded from the auto guess) so all of them are deletable.
