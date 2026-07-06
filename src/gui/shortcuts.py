@@ -336,10 +336,6 @@ def spawn_eem_from_lumen(main_window):
     main_window.display.active_contour_index = 0
     _sync_contour_combo(main_window, ContourType.EEM)
     main_window.display.update_display()
-    try:
-        main_window.longitudinal_view.plot_areas()
-    except Exception as e:
-        logger.debug(f"Could not update longitudinal view after EEM spawn: {e}")
 
 
 def remove_contours(main_window):
