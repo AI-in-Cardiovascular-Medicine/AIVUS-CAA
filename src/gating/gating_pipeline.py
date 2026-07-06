@@ -171,17 +171,25 @@ def prepare_data(
     bpm_cuts, sweep = compute_frequency_sweep(image_raw, fs)
 
     # ── Cache ─────────────────────────────────────────────────────────────
-    main_window.runtime_data.gating_signal = {
-        'image_based_gating': image_raw.tolist(),
-        'contour_based_gating': contour_raw.tolist(),
-        'image_based_gating_filtered': image_filtered.tolist(),
-        'contour_based_gating_filtered': contour_filtered.tolist(),
-        'gating_config': dict(vars(cfg)),
-        'f_heart': f_heart,
-        'f_heart_bpm': f_heart * 60,
-        'freq_sweep_bpm_cuts': bpm_cuts.tolist(),
-        'freq_sweep_signals': sweep.tolist(),
-    }
+    # Update in place (not reassign) so breathing_*/sort_* keys written by the
+    # longitudinal view / breathing sort viewer survive this refresh.
+    gs = main_window.runtime_data.gating_signal
+    if gs is None:
+        gs = {}
+        main_window.runtime_data.gating_signal = gs
+    gs.update(
+        {
+            'image_based_gating': image_raw.tolist(),
+            'contour_based_gating': contour_raw.tolist(),
+            'image_based_gating_filtered': image_filtered.tolist(),
+            'contour_based_gating_filtered': contour_filtered.tolist(),
+            'gating_config': dict(vars(cfg)),
+            'f_heart': f_heart,
+            'f_heart_bpm': f_heart * 60,
+            'freq_sweep_bpm_cuts': bpm_cuts.tolist(),
+            'freq_sweep_signals': sweep.tolist(),
+        }
+    )
 
     return image_raw, contour_raw, image_filtered, contour_filtered
 

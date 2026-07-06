@@ -55,51 +55,25 @@ def compute_breathing_signal(
     """
     frames_arr = np.asarray(frames_arr, dtype=float)
     areas_arr = np.asarray(areas_arr, dtype=float)
-    n = len(frames_arr)
+    n_samples = len(frames_arr)
 
-    signature = {
-        'frames': frames_arr.tolist(),
-        'areas': areas_arr.tolist(),
-        'gated_frames': sorted(int(f) for f in gated_frames) if gated_frames else [],
-        'fs': fs,
-        'f_heart': f_heart,
-        'f_resp_override': f_resp_override,
-        'poly_deg': poly_deg,
-        'gated_weight': gated_weight,
-    }
-    if cache is not None and cache.get('breathing_cache_signature') == signature:
-        cached_result = cache.get('breathing_cache_result')
-        if cached_result is not None:
-            return {k: np.asarray(v) if isinstance(v, (list, np.ndarray)) else v for k, v in cached_result.items()}
+    signature = _build_signal_signature(
+        frames_arr, areas_arr, gated_frames, fs, f_heart, f_resp_override, poly_deg, gated_weight
+    )
+    cached_result = _read_cached_signal(cache, signature)
+    if cached_result is not None:
+        return cached_result
 
-    if n < 3:
-        zeros = np.zeros(n)
-        result = {
-            'frames': frames_arr,
-            'areas': areas_arr,
-            'trend': areas_arr.copy(),
-            'slope': zeros,
-            'residual': zeros,
-            'smoothed': zeros,
-            'f_resp': 0.0,
-        }
+    if n_samples < 3:
+        result = _degenerate_signal_result(frames_arr, areas_arr)
     else:
-        weights = np.ones(n)
-        if gated_frames:
-            weights = np.where(np.isin(frames_arr.astype(int), list(gated_frames)), gated_weight, 1.0)
-
-        deg = min(poly_deg, n - 1)
-        coeffs = np.polyfit(frames_arr, areas_arr, deg=deg, w=weights)
-        trend = np.polyval(coeffs, frames_arr)
-        # Analytic derivative of the polynomial trend -> local taper slope (mm²/frame).
-        slope = np.polyval(np.polyder(coeffs), frames_arr)
-        residual = areas_arr - trend
+        trend, slope, residual = _fit_weighted_trend(frames_arr, areas_arr, gated_frames, poly_deg, gated_weight)
 
         if f_resp_override is not None:
             f_resp = float(f_resp_override)
         else:
-            f_resp = detect_breathing_rate(residual, fs, f_heart)
-        smoothed = extract_breathing_signal(residual, f_resp, fs)
+            f_resp = _detect_breathing_rate(residual, fs, f_heart)
+        smoothed = _extract_breathing_signal(residual, f_resp, fs)
 
         result = {
             'frames': frames_arr,
@@ -118,7 +92,80 @@ def compute_breathing_signal(
     return result
 
 
-def detect_breathing_rate(
+def _build_signal_signature(
+    frames_arr: np.ndarray,
+    areas_arr: np.ndarray,
+    gated_frames: set | None,
+    fs: float,
+    f_heart: float | None,
+    f_resp_override: float | None,
+    poly_deg: int,
+    gated_weight: float,
+) -> dict:
+    """Inputs that fully determine ``compute_breathing_signal``'s output, used to invalidate the cache."""
+    return {
+        'frames': frames_arr.tolist(),
+        'areas': areas_arr.tolist(),
+        'gated_frames': sorted(int(f) for f in gated_frames) if gated_frames else [],
+        'fs': fs,
+        'f_heart': f_heart,
+        'f_resp_override': f_resp_override,
+        'poly_deg': poly_deg,
+        'gated_weight': gated_weight,
+    }
+
+
+def _read_cached_signal(cache: dict | None, signature: dict) -> dict | None:
+    """Return the cached result if `signature` still matches, else None."""
+    if cache is None or cache.get('breathing_cache_signature') != signature:
+        return None
+    cached_result = cache.get('breathing_cache_result')
+    if cached_result is None:
+        return None
+    return {k: np.asarray(v) if isinstance(v, (list, np.ndarray)) else v for k, v in cached_result.items()}
+
+
+def _degenerate_signal_result(frames_arr: np.ndarray, areas_arr: np.ndarray) -> dict:
+    """Fallback result when there are too few points (<3) to fit a trend."""
+    zeros = np.zeros(len(frames_arr))
+    return {
+        'frames': frames_arr,
+        'areas': areas_arr,
+        'trend': areas_arr.copy(),
+        'slope': zeros,
+        'residual': zeros,
+        'smoothed': zeros,
+        'f_resp': 0.0,
+    }
+
+
+def _fit_weighted_trend(
+    frames_arr: np.ndarray,
+    areas_arr: np.ndarray,
+    gated_frames: set | None,
+    poly_deg: int,
+    gated_weight: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Polynomial pullback-taper trend, its slope, and the area residual.
+
+    Gated (manually reviewed) frames get ``gated_weight`` times the weight so
+    the trend is anchored by reliable points and not dragged by ostial noise.
+    """
+    n_samples = len(frames_arr)
+    weights = np.ones(n_samples)
+    if gated_frames:
+        weights = np.where(np.isin(frames_arr.astype(int), list(gated_frames)), gated_weight, 1.0)
+
+    deg = min(poly_deg, n_samples - 1)
+    coeffs = np.polyfit(frames_arr, areas_arr, deg=deg, w=weights)
+    trend = np.polyval(coeffs, frames_arr)
+    # Analytic derivative of the polynomial trend -> local taper slope (mm²/frame).
+    slope = np.polyval(np.polyder(coeffs), frames_arr)
+    residual = areas_arr - trend
+    return trend, slope, residual
+
+
+def _detect_breathing_rate(
     signal: np.ndarray,
     fs: float,
     f_heart_hz: float | None = None,
@@ -138,7 +185,7 @@ def detect_breathing_rate(
     return f_resp
 
 
-def extract_breathing_signal(
+def _extract_breathing_signal(
     area_signal: np.ndarray,
     f_resp_hz: float,
     fs: float,
@@ -186,62 +233,101 @@ def compute_breathing_phases(
     peaks_idx   : indices of breathing peaks (auto + manual, vessel displaced)
     valleys_idx : indices of breathing valleys (auto + manual, end-of-breath)
     """
-    sig = np.nan_to_num(breathing_signal - np.nanmean(breathing_signal))
-    N = len(sig)
-    phase = np.zeros(N)
+    sig_centered = np.nan_to_num(breathing_signal - np.nanmean(breathing_signal))
+    n_samples = len(sig_centered)
+    phase = np.zeros(n_samples)
 
-    _, auto_peaks, auto_valleys = walk_extrema(sig, swing_fraction=swing_fraction)
+    _, auto_peaks, auto_valleys = walk_extrema(sig_centered, swing_fraction=swing_fraction)
+    manual_peak_idx = _frames_to_indices(manual_peaks, frames_arr, n_samples)
+    manual_valley_idx = _frames_to_indices(manual_valleys, frames_arr, n_samples)
 
-    # Map manual frame numbers -> signal indices.
-    def _to_idx(frame_numbers):
-        if not frame_numbers:
-            return []
-        if frames_arr is None:
-            return [int(f) for f in frame_numbers if 0 <= int(f) < N]
-        fa = np.asarray(frames_arr)
-        return [int(np.argmin(np.abs(fa - f))) for f in frame_numbers]
-
-    man_peak_idx = _to_idx(manual_peaks)
-    man_valley_idx = _to_idx(manual_valleys)
-    manual_all = man_peak_idx + man_valley_idx
-
-    if manual_only:
-        # Use ONLY the user's labels
-        peaks_idx = np.array(sorted(set(man_peak_idx)), dtype=int)
-        valleys_idx = np.array(sorted(set(man_valley_idx)), dtype=int)
-    else:
-        # Drop auto extrema that sit near any manual anchor (manual wins).
-        def _keep(auto_list):
-            return [
-                int(a) for a in auto_list if not manual_all or min(abs(int(a) - m) for m in manual_all) >= anchor_gap
-            ]
-
-        peaks_idx = np.array(sorted(set(_keep(auto_peaks) + man_peak_idx)), dtype=int)
-        valleys_idx = np.array(sorted(set(_keep(auto_valleys) + man_valley_idx)), dtype=int)
-
-    all_pts = sorted(
-        [(int(f), 'v') for f in valleys_idx] + [(int(f), 'p') for f in peaks_idx],
-        key=lambda x: x[0],
+    peaks_idx, valleys_idx = _reconcile_extrema(
+        auto_peaks, auto_valleys, manual_peak_idx, manual_valley_idx, manual_only, anchor_gap
     )
-    all_pts = _alternate_anchors(all_pts)
 
-    if len(all_pts) < 2:
+    anchors = _alternate_anchors(_sorted_anchor_points(peaks_idx, valleys_idx))
+    if len(anchors) < 2:
         return phase, peaks_idx, valleys_idx
 
-    anchors_frame: list[float] = []
-    anchors_cum: list[float] = []
-    cum = 0.0 if all_pts[0][1] == 'v' else 0.5
-    for k, (f, _) in enumerate(all_pts):
-        if k > 0:
-            cum += 0.5
-        anchors_frame.append(float(f))
-        anchors_cum.append(cum)
-
-    af = np.array(anchors_frame)
-    ac = np.array(anchors_cum)
-    phase_unwrapped = np.interp(np.arange(N, dtype=float), af, ac, left=ac[0], right=ac[-1])
+    anchor_frames, anchor_cum_phase = _cumulative_phase_anchors(anchors)
+    phase_unwrapped = np.interp(
+        np.arange(n_samples, dtype=float),
+        anchor_frames,
+        anchor_cum_phase,
+        left=anchor_cum_phase[0],
+        right=anchor_cum_phase[-1],
+    )
     phase = phase_unwrapped % 1.0
     return phase, peaks_idx, valleys_idx
+
+
+def _frames_to_indices(
+    frame_numbers: list[int] | None,
+    frames_arr: np.ndarray | None,
+    n_samples: int,
+) -> list[int]:
+    """Map frame numbers to indices into the breathing signal (nearest match)."""
+    if not frame_numbers:
+        return []
+    if frames_arr is None:
+        return [int(f) for f in frame_numbers if 0 <= int(f) < n_samples]
+    frames_arr = np.asarray(frames_arr)
+    return [int(np.argmin(np.abs(frames_arr - f))) for f in frame_numbers]
+
+
+def _reconcile_extrema(
+    auto_peaks: np.ndarray,
+    auto_valleys: np.ndarray,
+    manual_peak_idx: list[int],
+    manual_valley_idx: list[int],
+    manual_only: bool,
+    anchor_gap: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Combine auto-detected and manual extrema, letting manual anchors win.
+
+    ``manual_only=True``: use only the user's labels.  Otherwise, auto extrema
+    within ``anchor_gap`` samples of a manual anchor are dropped so manual
+    anchors override the automatic detector locally, which only fills the
+    gaps elsewhere.
+    """
+    if manual_only:
+        peaks_idx = np.array(sorted(set(manual_peak_idx)), dtype=int)
+        valleys_idx = np.array(sorted(set(manual_valley_idx)), dtype=int)
+        return peaks_idx, valleys_idx
+
+    manual_all = manual_peak_idx + manual_valley_idx
+
+    def _drop_near_manual(auto_list):
+        return [int(a) for a in auto_list if not manual_all or min(abs(int(a) - m) for m in manual_all) >= anchor_gap]
+
+    peaks_idx = np.array(sorted(set(_drop_near_manual(auto_peaks) + manual_peak_idx)), dtype=int)
+    valleys_idx = np.array(sorted(set(_drop_near_manual(auto_valleys) + manual_valley_idx)), dtype=int)
+    return peaks_idx, valleys_idx
+
+
+def _sorted_anchor_points(peaks_idx: np.ndarray, valleys_idx: np.ndarray) -> list[tuple[int, str]]:
+    """Merge peak/valley indices into one (index, type) list sorted by index."""
+    return sorted(
+        [(int(f), 'v') for f in valleys_idx] + [(int(f), 'p') for f in peaks_idx],
+        key=lambda point: point[0],
+    )
+
+
+def _cumulative_phase_anchors(anchors: list[tuple[int, str]]) -> tuple[np.ndarray, np.ndarray]:
+    """Assign monotonically increasing cumulative phase to alternating anchors.
+
+    Each peak<->valley step is a half breathing cycle (+0.5); the running
+    total is wrapped to [0, 1) by the caller after interpolation.
+    """
+    anchor_frames: list[float] = []
+    cum_phase: list[float] = []
+    cum = 0.0 if anchors[0][1] == 'v' else 0.5
+    for k, (frame, _) in enumerate(anchors):
+        if k > 0:
+            cum += 0.5
+        anchor_frames.append(float(frame))
+        cum_phase.append(cum)
+    return np.array(anchor_frames), np.array(cum_phase)
 
 
 def _alternate_anchors(points: list[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -254,24 +340,24 @@ def _alternate_anchors(points: list[tuple[int, str]]) -> list[tuple[int, str]]:
     if len(points) < 2:
         return points
     out: list[tuple[int, str]] = [points[0]]
-    for f, t in points[1:]:
-        pf, pt = out[-1]
-        if t == pt and f != pf:
-            mid = (pf + f) // 2
-            if mid not in (pf, f):
-                out.append((mid, 'p' if t == 'v' else 'v'))
-        out.append((f, t))
+    for frame, kind in points[1:]:
+        prev_frame, prev_kind = out[-1]
+        if kind == prev_kind and frame != prev_frame:
+            mid = (prev_frame + frame) // 2
+            if mid not in (prev_frame, frame):
+                out.append((mid, 'p' if kind == 'v' else 'v'))
+        out.append((frame, kind))
     return out
 
 
 # ─────────────── breathing-bin registration sort (gated frames only) ────
 #
-# Idea (per phase - diastole and systole are handled independently):
+# Idea (per phase, diastole and systole are handled independently):
 #   * The labelled valleys are the vessel at rest (displacement 0); peaks are max
-#     displacement.  Each breathing half-cycle (valley->peak and peak->valley) is
+#     displacement. Each breathing half-cycle (valley->peak and peak->valley) is
 #     split into the same number of bins, and by symmetry the ascending and
 #     descending bin at a given displacement are pooled together.
-#   * Bin 0 (the valleys) is the ground truth: fit lumen-area vs frame position
+#   * Bin 0 (the valleys) is the ground truth: fit lumen-area (divided by ) vs frame position
 #     through those rest frames.
 #   * Every other bin's frames sample the SAME vessel profile but shifted along
 #     the pullback by the breathing displacement.  Slide that bin's area profile
@@ -297,19 +383,19 @@ def assign_breathing_bins(
     anchors = sorted([(int(v), 'v') for v in valleys] + [(int(p), 'p') for p in peaks])
     if len(anchors) < 2:
         return np.full(len(frames), -1, dtype=int)
-    af = np.array([a for a, _ in anchors])
+    anchor_frames = np.array([frame for frame, _ in anchors])
     bins = np.full(len(frames), -1, dtype=int)
-    for i, f in enumerate(frames):
-        j = int(np.searchsorted(af, f, side='right')) - 1
-        if j < 0 or j >= len(anchors) - 1:
+    for i, frame in enumerate(frames):
+        anchor_idx = int(np.searchsorted(anchor_frames, frame, side='right')) - 1
+        if anchor_idx < 0 or anchor_idx >= len(anchors) - 1:
             continue
-        a0, t0 = anchors[j]
-        a1, _ = anchors[j + 1]
-        if a1 <= a0:
+        start_frame, start_kind = anchors[anchor_idx]
+        end_frame, _ = anchors[anchor_idx + 1]
+        if end_frame <= start_frame:
             continue
-        u = (f - a0) / (a1 - a0)  # position within the half-cycle, 0..1
-        b = int(np.floor(u * n_bins)) if t0 == 'v' else int(np.floor((1.0 - u) * n_bins))
-        bins[i] = min(max(b, 0), n_bins - 1)
+        progress = (frame - start_frame) / (end_frame - start_frame)  # position within the half-cycle, 0..1
+        bin_idx = int(np.floor(progress * n_bins)) if start_kind == 'v' else int(np.floor((1.0 - progress) * n_bins))
+        bins[i] = min(max(bin_idx, 0), n_bins - 1)
     return bins
 
 
@@ -332,57 +418,96 @@ def register_phase(
     """
     frames = np.asarray(frames, dtype=float)
     areas = np.asarray(areas, dtype=float)
-    n = len(frames)
-    if n < gt_deg + 2:
-        return {
-            'bins': np.zeros(n, int),
-            'shifts': np.zeros(max(n_bins, 1)),
-            'corrected': frames.copy(),
-            'order': np.argsort(frames, kind='stable'),
-        }
+    n_samples = len(frames)
+    if n_samples < gt_deg + 2:
+        return _passthrough_registration(frames, np.zeros(n_samples, int), max(n_bins, 1))
 
     bins = assign_breathing_bins(frames, peaks, valleys, n_bins)
     if max_shift is None:
         span = (n_total if n_total else int(frames.max())) or 1
         max_shift = span / 4.0
 
-    # Ground truth = rest (bin 0) frames; widen if too few for the fit.
-    gt = bins == 0
-    if gt.sum() < gt_deg + 1:
-        gt = bins <= 0
-    if gt.sum() < gt_deg + 1:  # still too few -> no reliable reference
-        return {
-            'bins': bins,
-            'shifts': np.zeros(n_bins),
-            'corrected': frames.copy(),
-            'order': np.argsort(frames, kind='stable'),
-        }
-    cg = np.polyfit(frames[gt], areas[gt], gt_deg)
-    gt_lo, gt_hi = frames[gt].min(), frames[gt].max()
+    ground_truth = _fit_ground_truth_curve(frames, areas, bins, gt_deg)
+    if ground_truth is None:  # too few rest frames -> no reliable reference
+        return _passthrough_registration(frames, bins, n_bins)
+    ground_truth_area = ground_truth
 
-    def A_gt(x):
-        return np.polyval(cg, np.clip(x, gt_lo, gt_hi))
-
-    grid = np.arange(-max_shift, max_shift + 1.0, 2.0)
-    shifts = np.zeros(n_bins)
-    for k in range(1, n_bins):
-        m = bins == k
-        if m.sum() < 3:
-            shifts[k] = shifts[k - 1]  # too few frames -> reuse previous bin's shift
-            continue
-        fk, ak = frames[m], areas[m]
-        errs = [np.mean((ak - A_gt(fk + s)) ** 2) for s in grid]
-        shifts[k] = float(grid[int(np.argmin(errs))])
-
+    shifts = _estimate_bin_shifts(frames, areas, bins, n_bins, max_shift, ground_truth_area)
     if enforce_monotonic:
-        # displacement grows away from the valley; keep |shift| non-decreasing and
-        # of one consistent sign (the dominant direction across the bins)
-        sign = 1.0 if np.sum(shifts) >= 0 else -1.0
-        mags = np.maximum.accumulate(np.abs(shifts))
-        shifts = sign * mags
+        shifts = _enforce_monotonic_shifts(shifts)
 
-    corrected = frames.copy()
-    for k in range(n_bins):
-        corrected[bins == k] = frames[bins == k] + shifts[k]
+    corrected = _apply_bin_shifts(frames, bins, shifts, n_bins)
     order = np.argsort(corrected, kind='stable')
     return {'bins': bins, 'shifts': shifts, 'corrected': corrected, 'order': order}
+
+
+def _passthrough_registration(frames: np.ndarray, bins: np.ndarray, n_shift_bins: int) -> dict:
+    """No-correction fallback (identity mapping) for when there isn't enough data to register."""
+    return {
+        'bins': bins,
+        'shifts': np.zeros(n_shift_bins),
+        'corrected': frames.copy(),
+        'order': np.argsort(frames, kind='stable'),
+    }
+
+
+def _fit_ground_truth_curve(frames: np.ndarray, areas: np.ndarray, bins: np.ndarray, gt_deg: int):
+    """Fit the rest-frame (bin 0) area-vs-frame curve that every other bin is matched against.
+
+    Widens to bin<=0 if bin 0 alone has too few points for the fit.  Returns
+    a callable ``area(frame)`` (clipped to the fitted frame range), or None
+    if there still aren't enough rest frames for a reliable fit.
+    """
+    is_rest = bins == 0
+    if is_rest.sum() < gt_deg + 1:
+        is_rest = bins <= 0
+    if is_rest.sum() < gt_deg + 1:
+        return None
+    coeffs = np.polyfit(frames[is_rest], areas[is_rest], gt_deg)
+    lo, hi = frames[is_rest].min(), frames[is_rest].max()
+
+    def ground_truth_area(x):
+        return np.polyval(coeffs, np.clip(x, lo, hi))
+
+    return ground_truth_area
+
+
+def _estimate_bin_shifts(
+    frames: np.ndarray,
+    areas: np.ndarray,
+    bins: np.ndarray,
+    n_bins: int,
+    max_shift: float,
+    ground_truth_area,
+) -> np.ndarray:
+    """Per-bin displacement that best aligns each bin's area profile with the rest-frame ground truth."""
+    shift_grid = np.arange(-max_shift, max_shift + 1.0, 2.0)
+    shifts = np.zeros(n_bins)
+    for bin_idx in range(1, n_bins):
+        in_bin = bins == bin_idx
+        if in_bin.sum() < 3:
+            shifts[bin_idx] = shifts[bin_idx - 1]  # too few frames -> reuse previous bin's shift
+            continue
+        bin_frames, bin_areas = frames[in_bin], areas[in_bin]
+        errors = [np.mean((bin_areas - ground_truth_area(bin_frames + s)) ** 2) for s in shift_grid]
+        shifts[bin_idx] = float(shift_grid[int(np.argmin(errors))])
+    return shifts
+
+
+def _enforce_monotonic_shifts(shifts: np.ndarray) -> np.ndarray:
+    """Keep |shift| non-decreasing and of one consistent sign across bins.
+
+    Displacement grows away from the valley (bin 0); the sign used is the
+    dominant direction across the bins.
+    """
+    sign = 1.0 if np.sum(shifts) >= 0 else -1.0
+    magnitudes = np.maximum.accumulate(np.abs(shifts))
+    return sign * magnitudes
+
+
+def _apply_bin_shifts(frames: np.ndarray, bins: np.ndarray, shifts: np.ndarray, n_bins: int) -> np.ndarray:
+    """Shift each frame's position by its bin's displacement to recover the true pullback position."""
+    corrected = frames.copy()
+    for bin_idx in range(n_bins):
+        corrected[bins == bin_idx] = frames[bins == bin_idx] + shifts[bin_idx]
+    return corrected
