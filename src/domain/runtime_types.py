@@ -38,6 +38,7 @@ class GatingSignal(TypedDict, total=False):
     breathing_manual_mode: bool
     breathing_manual_peaks: list[int]
     breathing_manual_valleys: list[int]
+    has_breathing_artefact: bool
     sort_signature: dict[str, Any]
     sort_peaks: list[int]
     sort_valleys: list[int]

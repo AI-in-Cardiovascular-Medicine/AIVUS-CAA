@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QGraphicsLineItem,
     QGraphicsPathItem,
     QPushButton,
+    QCheckBox,
     QSizePolicy,
 )
 from PyQt6.QtCore import Qt
@@ -69,6 +70,25 @@ class LongitudinalView(QGraphicsView):
             'QPushButton:checked{background:#ff6060;color:#000}'
         )
 
+        # reset all manual peak/valley edits back to the automatic detection
+        self._reset_btn = QPushButton('Auto', self)
+        self._reset_btn.setFixedSize(55, 22)
+        self._reset_btn.setToolTip('Reset breathing peaks/valleys to automatic detection')
+        self._reset_btn.setStyleSheet('QPushButton{background:#333;color:#ddd;border:1px solid #777;font-size:10px}')
+        self._reset_btn.clicked.connect(self._on_reset_auto)
+
+        # "has breathing artefact?" - when unchecked, the curve is dotted and the
+        # Filtered viewer skips breathing correction (manual shuffle only).
+        self._artefact_cb = QCheckBox('Breathing artefact', self)
+        self._artefact_cb.setChecked(True)
+        self._artefact_cb.setToolTip(
+            'Uncheck when there is no breathing artefact: the curve is shown dotted '
+            'and Filtered only shuffles frames (no breathing correction).'
+        )
+        self._artefact_cb.setStyleSheet('QCheckBox{color:#ddd;font-size:10px;background:transparent}')
+        self._artefact_cb.adjustSize()
+        self._artefact_cb.toggled.connect(self._on_artefact_toggled)
+
         # mutual exclusion across all three mode buttons
         self._peak_btn.clicked.connect(self._on_peak_btn_clicked)
         self._valley_btn.clicked.connect(self._on_valley_btn_clicked)
@@ -85,6 +105,30 @@ class LongitudinalView(QGraphicsView):
     def _on_delete_btn_clicked(self):
         self._peak_btn.setChecked(False)
         self._valley_btn.setChecked(False)
+
+    def _on_reset_auto(self):
+        """Discard all manual peak/valley edits and return to automatic detection."""
+        gs = self.main_window.runtime_data.gating_signal
+        if gs is not None:
+            gs.pop('breathing_manual_peaks', None)
+            gs.pop('breathing_manual_valleys', None)
+            gs['breathing_manual_mode'] = False
+        self._peak_btn.setChecked(False)
+        self._valley_btn.setChecked(False)
+        self._delete_btn.setChecked(False)
+        self.plot_areas()
+
+    def _has_artefact(self) -> bool:
+        gs = self.main_window.runtime_data.gating_signal
+        return bool(gs.get('has_breathing_artefact', True)) if gs else True
+
+    def _on_artefact_toggled(self, checked: bool):
+        gs = self.main_window.runtime_data.gating_signal
+        if gs is None:
+            gs = {}
+            self.main_window.runtime_data.gating_signal = gs
+        gs['has_breathing_artefact'] = bool(checked)
+        self.plot_areas()  # redraw curve solid/dotted
 
     def set_data(self, images):
         self.graphics_scene.clear()
@@ -125,6 +169,11 @@ class LongitudinalView(QGraphicsView):
         self.setSceneRect(pixmap_item.boundingRect())
 
         self.stretch_to_fit()
+        # reflect the persisted breathing-artefact flag without triggering a redraw
+        gs = self.main_window.runtime_data.gating_signal
+        self._artefact_cb.blockSignals(True)
+        self._artefact_cb.setChecked(bool(gs.get('has_breathing_artefact', True)) if gs else True)
+        self._artefact_cb.blockSignals(False)
         self.plot_areas()
 
     def plot_areas(self):
@@ -241,6 +290,8 @@ class LongitudinalView(QGraphicsView):
         def to_y(v: float) -> float:
             return top_offset + (1.0 - v / max_area) * usable_height
 
+        has_artefact = self._has_artefact()
+
         path = QPainterPath()
         path.moveTo(frames_arr[0], to_y(display_signal[0]))
         for i in range(1, len(frames_arr)):
@@ -249,15 +300,20 @@ class LongitudinalView(QGraphicsView):
         curve_pen = QPen(QColor(0, 200, 220))
         curve_pen.setCosmetic(True)
         curve_pen.setWidth(0)
+        # No breathing artefact -> draw the curve dotted (no correction will apply)
+        if not has_artefact:
+            curve_pen.setStyle(Qt.PenStyle.DotLine)
         curve_item.setPen(curve_pen)
         self.graphics_scene.addItem(curve_item)
         self._breathing_items.append(curve_item)
 
-        if not breathing_detected:
+        # When there's no breathing artefact, peaks/valleys are irrelevant - the
+        # dotted curve alone signals that Filtered will only shuffle, not correct.
+        if not breathing_detected or not has_artefact:
             return
 
         # auto mode: show auto-detected peaks/valleys (hollow) + any manual (filled).
-        # manual mode (user has edited): only the user's labels — every one filled
+        # manual mode (user has edited): only the user's labels - every one filled
         # and deletable, and nothing hidden perturbs the phase.
         manual_mode = bool(gs.get('breathing_manual_mode', False)) if gs else False
         manual_peaks = list(gs.get('breathing_manual_peaks', [])) if gs else []
@@ -352,7 +408,7 @@ class LongitudinalView(QGraphicsView):
         if abs(frame - clicked_x) > tol:
             return False
         lst.remove(frame)
-        if not manual_peaks and not manual_valleys:  # deleted everything → back to auto
+        if not manual_peaks and not manual_valleys:  # deleted everything -> back to auto
             gs['breathing_manual_mode'] = False
         self.plot_areas()
         return True
@@ -452,3 +508,5 @@ class LongitudinalView(QGraphicsView):
         self._peak_btn.move(4, 4)
         self._valley_btn.move(63, 4)
         self._delete_btn.move(122, 4)
+        self._reset_btn.move(181, 4)
+        self._artefact_cb.move(240, 5)

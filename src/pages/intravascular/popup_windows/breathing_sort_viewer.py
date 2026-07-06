@@ -85,6 +85,7 @@ class BreathingSortViewer(QMainWindow):
         self.peaks: list[int] = []
         self.valleys: list[int] = []
         self.n_bins: int = 4
+        self.has_artefact: bool = True
         self.dia_idx = 0
         self.sys_idx = 0
         # index offset aligning the two phases at the ostium (most-proximal
@@ -139,12 +140,13 @@ class BreathingSortViewer(QMainWindow):
         valleys = [int(frames[i]) for i in vl if 0 <= i < len(frames)]
         return peaks, valleys
 
-    def _signature(self, peaks, valleys, n_bins):
+    def _signature(self, peaks, valleys, n_bins, artefact):
         """Identity of the anchors a sort was built from (to detect changes)."""
         return {
             'peaks': sorted(int(p) for p in peaks),
             'valleys': sorted(int(v) for v in valleys),
             'n_bins': int(n_bins),
+            'artefact': bool(artefact),
         }
 
     def _compute_sort(self):
@@ -160,6 +162,7 @@ class BreathingSortViewer(QMainWindow):
         area_of = self._areas()
         self.n_bins = int(getattr(self.main_window.config.gating, 'breathing_bins', 4))
         self.peaks, self.valleys = self._breathing_anchors(area_of)
+        self.has_artefact = bool(gs.get('has_breathing_artefact', True))
         n_total = int(rt.metadata.get('num_frames', 0)) or (len(rt.images) if rt.images is not None else 0)
 
         dia = [f for f in sorted(rt.gated_frames_dia) if f in area_of]
@@ -168,11 +171,11 @@ class BreathingSortViewer(QMainWindow):
             logger.info('Breathing sort: too few diastolic frames with contours')
             return
 
-        sig = self._signature(self.peaks, self.valleys, self.n_bins)
+        sig = self._signature(self.peaks, self.valleys, self.n_bins, self.has_artefact)
         cached = gs.get('sort_signature') == sig and gs.get('sort_dia_order') is not None
 
         if cached:
-            logger.info('Breathing sort: reusing stored order (anchors unchanged)')
+            logger.info('Breathing sort: reusing stored order')
             self.dia_sorted = [int(f) for f in gs.get('sort_dia_order', [])]
             self.sys_sorted = [int(f) for f in gs.get('sort_sys_order', [])]
             self.dia_pos = {int(f): float(p) for f, p in gs.get('sort_dia_pos', [])}
@@ -181,6 +184,11 @@ class BreathingSortViewer(QMainWindow):
             self.sys_shifts = [float(s) for s in gs.get('sort_sys_shifts', [])]
             self.dia_sorted = self._reconcile(self.dia_sorted, dia, self.dia_pos, self.dia_shifts)
             self.sys_sorted = self._reconcile(self.sys_sorted, sys, self.sys_pos, self.sys_shifts)
+        elif not self.has_artefact:
+            # No breathing artefact → no correction: just present gated frames in
+            # acquisition order for manual shuffling.
+            logger.info('Breathing sort: no artefact — acquisition order (shuffle only)')
+            self._acquisition_order(dia, sys)
         else:
             logger.info('Breathing sort: recomputing (anchors changed / no cache)')
             self._recompute(dia, sys, area_of, n_total)
@@ -188,6 +196,15 @@ class BreathingSortViewer(QMainWindow):
         if self.dia_sorted:
             self._store_sort()
         self._update_anchor()
+
+    def _acquisition_order(self, dia, sys):
+        """No breathing correction: keep gated frames in acquisition (frame) order."""
+        self.dia_sorted = list(dia)
+        self.dia_pos = {f: float(f) for f in dia}
+        self.dia_shifts = []
+        self.sys_sorted = list(sys) if len(sys) >= 5 else []
+        self.sys_pos = {f: float(f) for f in self.sys_sorted}
+        self.sys_shifts = []
 
     def _update_anchor(self):
         """Compute the dia→sys index offset that lines up the two ostium
@@ -263,7 +280,7 @@ class BreathingSortViewer(QMainWindow):
     def _store_sort(self):
         """Persist the current sort into gating_signal (auto-saved to the JSON)."""
         gs = self.main_window.runtime_data.gating_signal
-        gs['sort_signature'] = self._signature(self.peaks, self.valleys, self.n_bins)
+        gs['sort_signature'] = self._signature(self.peaks, self.valleys, self.n_bins, self.has_artefact)
         gs['sort_peaks'] = sorted(int(p) for p in self.peaks)
         gs['sort_valleys'] = sorted(int(v) for v in self.valleys)
         gs['sort_n_bins'] = int(self.n_bins)
