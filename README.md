@@ -7,7 +7,9 @@
   </a>
 </p>
 
-
+> [!IMPORTANT]  
+> The original codebase has been renamed to **[HolOrama](https://github.com/AI-in-Cardiovascular-Medicine/HolOrama)** and continues to be actively developed there.
+> This repository (**AIVUS-CAA**) is a frozen-in-time fork, kept solely to mirror the link cited in the original publication (Computer Methods and Programs in Biomedicine). It is **not maintained**, for the current, actively developed version, please use [HolOrama](https://github.com/AI-in-Cardiovascular-Medicine/HolOrama).
 
 # AIVUS (Automated IntraVascular UltraSound Image Processing) <!-- omit in toc -->
 - AIVUS-CAA (Quantification of Coronary Artery Anomalies)
